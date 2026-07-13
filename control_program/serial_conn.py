@@ -87,6 +87,16 @@ class SerialConnection:
         print("Requesting configuration from board...")
         return self.send_command([0x50])
 
+    def set_cam_switch_config(self, active_camera, cam_rc_channel, manual_override):
+        payload = [
+            0x60,
+            1 if active_camera else 0,
+            cam_rc_channel,
+            1 if manual_override else 0
+        ]
+        print(f"Sending Cam Switch Config: ActiveCam={active_camera}, RC_Chan={cam_rc_channel}, ManualPot={manual_override}")
+        return self.send_command(payload)
+
     def _read_loop(self):
         buffer = bytearray()
         while self.running:
@@ -96,26 +106,23 @@ class SerialConnection:
                         data = self.ser.read(self.ser.in_waiting)
                         buffer.extend(data)
 
-                        # Parse loop to find 36-byte robust Config response
+                        # Parse loop to find 43-byte robust Config response
                         # [0xCF][0xFC][system_mode]...[checksum]
-                        while len(buffer) >= 36:
+                        while len(buffer) >= 43:
                             idx = buffer.find(b'\xCF\xFC')
                             if idx == -1:
-                                # Header not found, look for partial or clear
                                 if buffer.endswith(b'\xCF'):
                                     buffer = buffer[-1:]
                                 else:
                                     buffer.clear()
                                 break
                             elif idx > 0:
-                                # Remove garbage bytes before sync header
                                 del buffer[:idx]
                                 continue
 
-                            # We have a candidate packet of length 36 starting with 0xCF 0xFC
-                            packet = buffer[:36]
+                            packet = buffer[:43]
                             self._parse_config_packet(packet)
-                            del buffer[:36]
+                            del buffer[:43]
                 except Exception as e:
                     print(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)
@@ -123,12 +130,11 @@ class SerialConnection:
                 time.sleep(0.1)
 
     def _parse_config_packet(self, packet):
-        if len(packet) < 36 or packet[0] != 0xCF or packet[1] != 0xFC:
+        if len(packet) < 43 or packet[0] != 0xCF or packet[1] != 0xFC:
             return
 
-        # Verify trailing 8-bit checksum over payload bytes (index 2 to 34)
-        calc_cksum = sum(packet[2:35]) & 0xFF
-        parsed_cksum = packet[35]
+        calc_cksum = sum(packet[2:42]) & 0xFF
+        parsed_cksum = packet[42]
         if calc_cksum != parsed_cksum:
             print("Config packet checksum validation failed, discarding packet.")
             return
@@ -154,6 +160,13 @@ class SerialConnection:
         vrx_chan = packet[32]
         vrx_mhz = (packet[33] << 8) | packet[34]
 
+        # New robust parameters
+        manual_override = packet[35]
+        active_camera = packet[36]
+        cam_rc_chan = packet[37]
+        live_az = (packet[38] << 8) | packet[39]
+        live_el = (packet[40] << 8) | packet[41]
+
         config_dict = {
             'system_mode': system_mode,
             'az_min': az_min,
@@ -171,7 +184,12 @@ class SerialConnection:
             'vrx_rc_chan': vrx_rc_chan,
             'vrx_band': vrx_band,
             'vrx_chan': vrx_chan,
-            'vrx_mhz': vrx_mhz
+            'vrx_mhz': vrx_mhz,
+            'manual_override': manual_override,
+            'active_camera': active_camera,
+            'cam_rc_chan': cam_rc_chan,
+            'live_az': live_az,
+            'live_el': live_el
         }
 
         if self.on_config_received_cb:

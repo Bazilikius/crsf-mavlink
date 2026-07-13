@@ -13,6 +13,7 @@ if(TARGET pico_stdlib)
         routing.c
         tracker.c
         vrx_control.c
+        oled.c
         usb_descriptors.c
         ../shared/mux_protocol.c
     )

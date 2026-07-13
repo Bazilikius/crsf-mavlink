@@ -28,13 +28,27 @@ int main(void) {
     init_system();
     tracker_init();
     vrx_init();
+    oled_init();
+
+    uint32_t last_display_update_ms = 0;
 
     while (1) {
 #ifdef PICO_BOARD
         tud_task(); // Maintain TinyUSB device library tasks
 
+        // ----------------- Potentiometer Readings & Display -----------------
+        uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+        if (now_ms - last_display_update_ms >= 50) {
+            last_display_update_ms = now_ms;
+
+            // Read potentiometers (only updates PWM if manual override is active)
+            tracker_read_potentiometers();
+
+            // Update I2C SSD1306 display
+            oled_update_display();
+        }
+
         // ----------------- USB CDC 0 Routing (MAVLink) -----------------
-        // 1. Data from PC MAVLink USB Port (CDC 0) -> Send to Multiplexer (UART1)
         if (tud_cdc_n_available(0)) {
             uint8_t usb_buf[64];
             uint32_t count = tud_cdc_n_read(0, usb_buf, sizeof(usb_buf));
@@ -48,7 +62,6 @@ int main(void) {
         }
 
         // ----------------- USB CDC 1 Routing (Configuration/Control) -----------------
-        // 2. Data from PC Control/GUI Port (CDC 1) -> Process command locally
         if (tud_cdc_n_available(1)) {
             uint8_t cmd_buf[64];
             uint32_t count = tud_cdc_n_read(1, cmd_buf, sizeof(cmd_buf));
@@ -58,36 +71,29 @@ int main(void) {
         }
 
         // ----------------- UART1 Routing (Data from Board 2) -----------------
-        // 3. Demultiplex data received from Board 2
         while (uart_is_readable(uart1)) {
             uint8_t b = uart_getc(uart1);
             MuxFrame rx_frame;
             if (mux_parse_byte(&g_mux_parser, b, &rx_frame)) {
-                // Handle different virtual channels
                 if (rx_frame.chan_id == MUX_CHAN_MAVLINK) {
-                    // Send to CDC 0 (MAVLink COM port on Windows)
                     tud_cdc_n_write(0, rx_frame.payload, rx_frame.len);
                     tud_cdc_n_write_flush(0);
 
-                    // Parse locally for Antenna Tracker
                     for (uint8_t i = 0; i < rx_frame.len; i++) {
                         tracker_parse_mavlink_byte(rx_frame.payload[i]);
                     }
                 }
                 else if (rx_frame.chan_id == MUX_CHAN_CRSF) {
-                    // Parse CRSF channels to change VRX channels
                     for (uint8_t i = 0; i < rx_frame.len; i++) {
                         vrx_parse_crsf_byte(rx_frame.payload[i]);
                     }
                 }
                 else if (rx_frame.chan_id == MUX_CHAN_CONFIG) {
-                    // Process external configuration or stats
                     process_pc_command(rx_frame.payload, rx_frame.len);
                 }
             }
         }
 #else
-        // Sleep or break in non-microcontroller environment to avoid CPU spinning
         break;
 #endif
     }

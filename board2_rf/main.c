@@ -38,6 +38,19 @@ static uint16_t mavlink_crc_accumulate(uint8_t data, uint16_t crc) {
     return (crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4);
 }
 
+// Get MAVLink CRC Extra byte for common telemetry messages
+static uint8_t get_mavlink_crc_extra(uint32_t msg_id) {
+    switch (msg_id) {
+        case 0:  return 50;  // HEARTBEAT
+        case 1:  return 103; // SYS_STATUS
+        case 24: return 30;  // GPS_RAW_INT
+        case 30: return 39;  // ATTITUDE
+        case 33: return 104; // GLOBAL_POSITION_INT
+        case 74: return 20;  // VFR_HUD
+        default: return 0;
+    }
+}
+
 // Standard CRSF CRC-8 calculation
 static uint8_t crsf_crc8(const uint8_t *ptr, uint8_t len) {
     uint8_t crc = 0;
@@ -87,10 +100,8 @@ static void parse_and_forward_jr1_mixed(uint8_t byte) {
             break;
         case 2: // Payload + Checksum
             s_jr1_crsf_buf[s_jr1_crsf_idx++] = byte;
-            // Total frame size = length + 2 (addr + len)
             if (s_jr1_crsf_idx >= (s_jr1_crsf_buf[1] + 2)) {
-                // Calculate and validate CRSF CRC-8 on the payload bytes (from type at index 2 to payload)
-                uint8_t payload_len = s_jr1_crsf_buf[1] - 1; // len includes type byte
+                uint8_t payload_len = s_jr1_crsf_buf[1] - 1;
                 uint8_t calculated_crc = crsf_crc8(&s_jr1_crsf_buf[2], payload_len);
                 uint8_t parsed_crc = s_jr1_crsf_buf[s_jr1_crsf_idx - 1];
 
@@ -128,22 +139,16 @@ static void parse_and_forward_jr1_mixed(uint8_t byte) {
         case 2: // Rest of Header + Payload + Checksum (2 bytes)
             s_jr1_mav_buf[s_jr1_mav_idx++] = byte;
 
-            // Accumulate CRC on header + payload (except start byte, length, and CRC bytes themselves)
-            // Header for v1 without STX and LEN has 4 bytes (SEQ, SYSID, COMPID, MSGID)
-            // Header for v2 without STX and LEN has 7 bytes (INC_FLAGS, COMP_FLAGS, SEQ, SYSID, COMPID, MSGID0, MSGID1, MSGID2)
-            uint16_t total_header_len = s_jr1_mav_is_v2 ? 9 : 5;
-            uint16_t payload_and_crc_start_idx = total_header_len + 1; // index after header (which is STX + LEN + other header fields)
+            uint16_t target_len = s_jr1_mav_is_v2 ? (s_jr1_mav_len + 12) : (s_jr1_mav_len + 8);
 
-            if (s_jr1_mav_idx < payload_and_crc_start_idx + s_jr1_mav_len) {
+            // Accumulate CRC on all bytes excluding STX and CRC bytes (index 1 up to target_len - 3)
+            if (s_jr1_mav_idx <= target_len - 2) {
                 s_jr1_mav_crc = mavlink_crc_accumulate(byte, s_jr1_mav_crc);
             }
 
-            uint16_t target_len = s_jr1_mav_is_v2 ? (s_jr1_mav_len + 12) : (s_jr1_mav_len + 8);
             if (s_jr1_mav_idx >= target_len) {
-                // Read checksum
                 s_jr1_parsed_crc = s_jr1_mav_buf[target_len - 2] | (s_jr1_mav_buf[target_len - 1] << 8);
 
-                // Get MSG_ID to find the extra CRC byte
                 uint32_t msg_id = 0;
                 if (s_jr1_mav_is_v2) {
                     msg_id = s_jr1_mav_buf[7] | (s_jr1_mav_buf[8] << 8) | (s_jr1_mav_buf[9] << 16);
@@ -151,10 +156,9 @@ static void parse_and_forward_jr1_mixed(uint8_t byte) {
                     msg_id = s_jr1_mav_buf[5];
                 }
 
-                uint8_t extra_byte = 0;
-                if (msg_id == 33) extra_byte = 104; // GLOBAL_POSITION_INT CRC Extra
-
+                uint8_t extra_byte = get_mavlink_crc_extra(msg_id);
                 uint16_t final_crc = mavlink_crc_accumulate(extra_byte, s_jr1_mav_crc);
+
                 if (final_crc == s_jr1_parsed_crc) {
                     send_mux_frame(MUX_CHAN_MAVLINK, s_jr1_mav_buf, s_jr1_mav_idx);
                 }
@@ -190,7 +194,6 @@ int main(void) {
             MuxFrame rx_frame;
             if (mux_parse_byte(&g_mux_parser, b, &rx_frame)) {
                 if (rx_frame.chan_id == MUX_CHAN_MAVLINK) {
-                    // Send to JR1 if mode is 1 or 3
                     if (g_active_mode == MODE_JR1_ALL || g_active_mode == MODE_SIMULTANEOUS) {
                         for (uint8_t i = 0; i < rx_frame.len; i++) {
                             uart_putc(uart0, rx_frame.payload[i]);
@@ -198,7 +201,6 @@ int main(void) {
                     }
                 }
                 else if (rx_frame.chan_id == MUX_CHAN_CRSF) {
-                    // Send to active CRSF module
                     if (g_active_mode == MODE_JR1_ALL) {
                         for (uint8_t i = 0; i < rx_frame.len; i++) {
                             uart_putc(uart0, rx_frame.payload[i]);
@@ -208,7 +210,6 @@ int main(void) {
                     }
                 }
                 else if (rx_frame.chan_id == MUX_CHAN_CONFIG) {
-                    // Config command
                     switcher_process_command(rx_frame.payload, rx_frame.len);
                 }
             }
@@ -216,21 +217,18 @@ int main(void) {
 
         // ----------------- Step 2: Handle JR Module Inputs & Forward to Board 1 -----------------
         if (g_active_mode == MODE_JR1_ALL) {
-            // JR Module 1 carries mixed MAVLink and CRSF data. Use parsing filters.
             while (uart_is_readable(uart0)) {
                 uint8_t b = uart_getc(uart0);
                 parse_and_forward_jr1_mixed(b);
             }
         }
         else if (g_active_mode == MODE_JR2_CRSF) {
-            // JR Module 2 handles CRSF exclusively
             uint16_t count = pio_uart_read(s_local_rx_buf, sizeof(s_local_rx_buf));
             if (count > 0) {
                 send_mux_frame(MUX_CHAN_CRSF, s_local_rx_buf, count);
             }
         }
         else if (g_active_mode == MODE_SIMULTANEOUS) {
-            // JR Module 1 handles MAVLink only
             uint8_t chunk[64];
             uint8_t chunk_idx = 0;
             while (uart_is_readable(uart0) && chunk_idx < sizeof(chunk)) {
@@ -240,7 +238,6 @@ int main(void) {
                 send_mux_frame(MUX_CHAN_MAVLINK, chunk, chunk_idx);
             }
 
-            // JR Module 2 handles CRSF only
             uint16_t count = pio_uart_read(s_local_rx_buf, sizeof(s_local_rx_buf));
             if (count > 0) {
                 send_mux_frame(MUX_CHAN_CRSF, s_local_rx_buf, count);

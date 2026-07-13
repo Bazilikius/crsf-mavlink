@@ -12,6 +12,9 @@
 #define PIN_I2C_SCL         17
 #define PIN_UART_TX         4
 #define PIN_UART_RX         5
+#define PIN_CAM_SWITCH      18  // Camera selector switch
+#define PIN_ADC_POT_AZ      26  // ADC0 Potentiometer for Azimuth
+#define PIN_ADC_POT_EL      27  // ADC1 Potentiometer for Elevation
 
 // Active System Mode
 typedef enum {
@@ -46,6 +49,15 @@ typedef struct {
     uint8_t vrx_band;            // 0: A, 1: B, 2: E, 3: F, 4: Raceband
     uint8_t vrx_channel;         // 0 to 7
     uint16_t vrx_frequency_mhz;  // Frequency in MHz
+
+    // Potentiometer & Manual Override / Cam Switch Settings
+    uint8_t manual_override;     // 1 = manual control via potentiometers, 0 = auto tracker
+    uint8_t active_camera;       // 0 = Analog Camera, 1 = VRX Camera
+    uint8_t cam_rc_channel;      // RC channel used to control cam switch (e.g. channel 7)
+
+    // Live tracking status for displaying on OLED and PC
+    uint16_t live_azimuth_deg;   // 0 to 360 degrees
+    uint16_t live_elevation_deg; // 0 to 180 degrees
 } SystemConfig;
 
 // Global structures
@@ -67,6 +79,7 @@ void tracker_update_pwm(uint16_t azimuth_us, uint16_t elevation_us);
 void tracker_parse_mavlink_byte(uint8_t byte);
 void tracker_set_home(float lat, float lon, float alt);
 void tracker_calculate_angles(float target_lat, float target_lon, float target_alt, uint16_t *out_az_us, uint16_t *out_el_us);
+void tracker_read_potentiometers(void);
 
 // VRX Control module
 void vrx_init(void);
@@ -74,5 +87,10 @@ void vrx_set_frequency(uint16_t mhz);
 void vrx_set_band_channel(uint8_t band, uint8_t channel);
 void vrx_parse_crsf_byte(uint8_t byte);
 void vrx_update_channels(const uint16_t channels[16]);
+void vrx_set_cam_switch(uint8_t active_cam);
+
+// OLED display module
+void oled_init(void);
+void oled_update_display(void);
 
 #endif // GROUND_STATION_H

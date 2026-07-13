@@ -6,6 +6,7 @@
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
+#include "hardware/adc.h"
 #endif
 
 #ifndef M_PI
@@ -47,6 +48,19 @@ static uint16_t mavlink_crc_accumulate(uint8_t data, uint16_t crc) {
     return (crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4);
 }
 
+// Get MAVLink CRC Extra byte for common telemetry messages
+static uint8_t get_mavlink_crc_extra(uint32_t msg_id) {
+    switch (msg_id) {
+        case 0:  return 50;  // HEARTBEAT
+        case 1:  return 103; // SYS_STATUS
+        case 24: return 30;  // GPS_RAW_INT
+        case 30: return 39;  // ATTITUDE
+        case 33: return 104; // GLOBAL_POSITION_INT
+        case 74: return 20;  // VFR_HUD
+        default: return 0;
+    }
+}
+
 void tracker_init(void) {
 #ifdef PICO_BOARD
     // Initialize PWM pins for Azimuth and Elevation servos
@@ -57,14 +71,17 @@ void tracker_init(void) {
     uint slice_az = pwm_gpio_to_slice_num(PIN_SERVO_AZIMUTH);
     uint slice_el = pwm_gpio_to_slice_num(PIN_SERVO_ELEVATION);
 
-    // Assuming 125MHz system clock
-    // 50Hz frequency -> 125MHz / (50 * 20000) = 125 system clock division
     pwm_config config = pwm_get_default_config();
     pwm_config_set_clkdiv(&config, 125.0f);
-    pwm_config_set_wrap(&config, 20000); // 20000 cycles of 1us = 20ms (50Hz)
+    pwm_config_set_wrap(&config, 20000); // 20ms period
 
     pwm_init(slice_az, &config, true);
     pwm_init(slice_el, &config, true);
+
+    // Initialize ADC for Potentiometers
+    adc_init();
+    adc_gpio_init(PIN_ADC_POT_AZ);
+    adc_gpio_init(PIN_ADC_POT_EL);
 
     // Set to mid position (1500us) initially
     tracker_update_pwm(g_config.azimuth_trim_us, g_config.elevation_trim_us);
@@ -72,7 +89,6 @@ void tracker_init(void) {
 }
 
 void tracker_update_pwm(uint16_t azimuth_us, uint16_t elevation_us) {
-    // Clamp to config safe limits
     if (azimuth_us < g_config.azimuth_min_us) azimuth_us = g_config.azimuth_min_us;
     if (azimuth_us > g_config.azimuth_max_us) azimuth_us = g_config.azimuth_max_us;
 
@@ -85,6 +101,43 @@ void tracker_update_pwm(uint16_t azimuth_us, uint16_t elevation_us) {
 #endif
 }
 
+void tracker_read_potentiometers(void) {
+    if (g_config.manual_override != 1) {
+        return; // Only execute if manual potentiometer control is enabled
+    }
+
+#ifdef PICO_BOARD
+    // Read Azimuth potentiometer on ADC0
+    adc_select_input(0);
+    uint16_t raw_az = adc_read(); // 0..4095
+
+    // Read Elevation potentiometer on ADC1
+    adc_select_input(1);
+    uint16_t raw_el = adc_read(); // 0..4095
+
+    // Convert ADC ranges to degrees: Azimuth 360°, Elevation 180°
+    g_config.live_azimuth_deg = (uint16_t)((raw_az * 360.0f) / 4095.0f);
+    g_config.live_elevation_deg = (uint16_t)((raw_el * 180.0f) / 4095.0f);
+
+    // Scale to servo PWM microsecond outputs
+    float az_pct = (float)raw_az / 4095.0f;
+    if (g_config.azimuth_reversed) {
+        az_pct = 1.0f - az_pct;
+    }
+    uint16_t az_range_us = g_config.azimuth_max_us - g_config.azimuth_min_us;
+    uint16_t az_us = g_config.azimuth_min_us + (uint16_t)(az_pct * az_range_us);
+
+    float el_pct = (float)raw_el / 4095.0f;
+    if (g_config.elevation_reversed) {
+        el_pct = 1.0f - el_pct;
+    }
+    uint16_t el_range_us = g_config.elevation_max_us - g_config.elevation_min_us;
+    uint16_t el_us = g_config.elevation_min_us + (uint16_t)(el_pct * el_range_us);
+
+    tracker_update_pwm(az_us, el_us);
+#endif
+}
+
 void tracker_set_home(float lat, float lon, float alt) {
     g_config.home_lat = lat;
     g_config.home_lon = lon;
@@ -94,7 +147,6 @@ void tracker_set_home(float lat, float lon, float alt) {
 
 void tracker_calculate_angles(float target_lat, float target_lon, float target_alt, uint16_t *out_az_us, uint16_t *out_el_us) {
     if (!g_config.home_set) {
-        // If home is not set, default to neutral
         *out_az_us = g_config.azimuth_trim_us;
         *out_el_us = g_config.elevation_trim_us;
         return;
@@ -114,15 +166,17 @@ void tracker_calculate_angles(float target_lat, float target_lon, float target_a
     if (azimuth_deg < 0) {
         azimuth_deg += 360.0f;
     }
+    g_config.live_azimuth_deg = (uint16_t)azimuth_deg;
 
-    // Calculate Distance and Elevation
+    // Calculate Distance and Elevation (Elevation up to 180 degrees)
     float horizontal_dist = sqrtf(x*x + y*y);
     float elevation_deg = 0.0f;
     if (horizontal_dist > 0.1f) {
         elevation_deg = atan2f(z, horizontal_dist) * (180.0f / M_PI);
     }
     if (elevation_deg < 0.0f) elevation_deg = 0.0f;
-    if (elevation_deg > 90.0f) elevation_deg = 90.0f;
+    if (elevation_deg > 180.0f) elevation_deg = 180.0f;
+    g_config.live_elevation_deg = (uint16_t)elevation_deg;
 
     // Map bearing (0 to 360 deg) to servo microseconds
     float az_range_us = g_config.azimuth_max_us - g_config.azimuth_min_us;
@@ -132,9 +186,9 @@ void tracker_calculate_angles(float target_lat, float target_lon, float target_a
     }
     *out_az_us = g_config.azimuth_min_us + (uint16_t)(az_pct * az_range_us);
 
-    // Map elevation (0 to 90 deg) to servo microseconds
+    // Map elevation (0 to 180 deg) to servo microseconds
     float el_range_us = g_config.elevation_max_us - g_config.elevation_min_us;
-    float el_pct = elevation_deg / 90.0f;
+    float el_pct = elevation_deg / 180.0f;
     if (g_config.elevation_reversed) {
         el_pct = 1.0f - el_pct;
     }
@@ -143,22 +197,24 @@ void tracker_calculate_angles(float target_lat, float target_lon, float target_a
 
 // Simple internal handler when a valid MAVLink message is received
 static void handle_parsed_mavlink(uint32_t msg_id, const uint8_t *payload, uint8_t len) {
+    if (g_config.manual_override == 1) {
+        return; // Bypass tracking engine if manually controlling via potentiometers
+    }
+
     if (msg_id == 33) { // GLOBAL_POSITION_INT
         if (len < 28) return;
 
-        // Extract lat, lon, alt from payload
         int32_t lat_int, lon_int, alt_int;
         memcpy(&lat_int, &payload[4], 4);
         memcpy(&lon_int, &payload[8], 4);
-        memcpy(&alt_int, &payload[16], 4); // relative alt to home is at offset 16, alt (AMSL) at 12
+        memcpy(&alt_int, &payload[16], 4);
 
         float lat = lat_int / 1e7f;
         float lon = lon_int / 1e7f;
-        float rel_alt = alt_int / 1000.0f; // mm to meters
+        float rel_alt = alt_int / 1000.0f;
 
-        // If home is not set, initialize it with the first valid GPS position
         if (!g_config.home_set) {
-            tracker_set_home(lat, lon, 0.0f); // set relative alt home to 0.0
+            tracker_set_home(lat, lon, 0.0f);
         }
 
         uint16_t az_us, el_us;
@@ -171,11 +227,11 @@ static void handle_parsed_mavlink(uint32_t msg_id, const uint8_t *payload, uint8
 void tracker_parse_mavlink_byte(uint8_t byte) {
     switch (s_mav_state) {
         case MAV_STATE_UNINIT:
-            if (byte == 0xFE) { // MAVLink v1 STX
+            if (byte == 0xFE) {
                 s_is_v2 = false;
                 s_mav_crc = 0xFFFF;
                 s_mav_state = MAV_STATE_GOT_STX;
-            } else if (byte == 0xFD) { // MAVLink v2 STX
+            } else if (byte == 0xFD) {
                 s_is_v2 = true;
                 s_mav_crc = 0xFFFF;
                 s_mav_state = MAV_STATE_GOT_STX;
@@ -264,11 +320,7 @@ void tracker_parse_mavlink_byte(uint8_t byte) {
             s_parsed_crc |= (byte << 8);
             s_mav_state = MAV_STATE_UNINIT;
 
-            // Add MSG_ID extra byte to CRC verification based on MAVLink specifications
-            uint8_t extra_byte = 0;
-            if (s_mav_msg_id == 33) {
-                extra_byte = 104; // GLOBAL_POSITION_INT CRC Extra
-            }
+            uint8_t extra_byte = get_mavlink_crc_extra(s_mav_msg_id);
             uint16_t final_crc = mavlink_crc_accumulate(extra_byte, s_mav_crc);
 
             if (final_crc == s_parsed_crc) {

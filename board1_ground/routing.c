@@ -24,7 +24,6 @@ SystemConfig g_config;
 MuxParser g_mux_parser;
 
 void init_system(void) {
-    // Set up default configuration
     g_config.system_mode = MODE_SIMULTANEOUS;
 
     g_config.azimuth_min_us = 1000;
@@ -42,10 +41,17 @@ void init_system(void) {
     g_config.home_alt = 0.0f;
     g_config.home_set = false;
 
-    g_config.vrx_rc_channel = 8; // Channel 8 default
-    g_config.vrx_band = 3;       // Fatshark/F-band default
-    g_config.vrx_channel = 0;    // Channel 1 default
+    g_config.vrx_rc_channel = 8;
+    g_config.vrx_band = 3;
+    g_config.vrx_channel = 0;
     g_config.vrx_frequency_mhz = 5740;
+
+    g_config.manual_override = 0;
+    g_config.active_camera = 1;
+    g_config.cam_rc_channel = 7;
+
+    g_config.live_azimuth_deg = 0;
+    g_config.live_elevation_deg = 0;
 
     mux_parser_init(&g_mux_parser);
 }
@@ -88,15 +94,24 @@ void send_config_to_pc(void) {
     buffer[33] = g_config.vrx_frequency_mhz >> 8;
     buffer[34] = g_config.vrx_frequency_mhz & 0xFF;
 
-    // Calculate 8-bit checksum over payload bytes (index 2 to 34)
+    // New parameters
+    buffer[35] = g_config.manual_override;
+    buffer[36] = g_config.active_camera;
+    buffer[37] = g_config.cam_rc_channel;
+    buffer[38] = g_config.live_azimuth_deg >> 8;
+    buffer[39] = g_config.live_azimuth_deg & 0xFF;
+    buffer[40] = g_config.live_elevation_deg >> 8;
+    buffer[41] = g_config.live_elevation_deg & 0xFF;
+
+    // Calculate 8-bit checksum over payload bytes (index 2 to 41)
     uint8_t cksum = 0;
-    for (uint8_t i = 2; i <= 34; i++) {
+    for (uint8_t i = 2; i <= 41; i++) {
         cksum += buffer[i];
     }
-    buffer[35] = cksum;
+    buffer[42] = cksum;
 
 #ifdef PICO_BOARD
-    tud_cdc_n_write(1, buffer, 36);
+    tud_cdc_n_write(1, buffer, 43);
     tud_cdc_n_write_flush(1);
 #endif
 }
@@ -156,6 +171,15 @@ void process_pc_command(const uint8_t *payload, uint8_t len) {
 
         case 0x50: // Read Config Request
             send_config_to_pc();
+            break;
+
+        case 0x60: // Set Camera Switch & Manual Potentiometer Settings
+            if (len >= 4) {
+                g_config.active_camera = payload[1];
+                g_config.cam_rc_channel = payload[2];
+                g_config.manual_override = payload[3];
+                vrx_set_cam_switch(g_config.active_camera);
+            }
             break;
     }
 }
