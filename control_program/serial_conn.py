@@ -152,6 +152,13 @@ class SerialConnection:
         self.udp_client_addr = None
         self.udp_port = 14550 # Standard Mission Planner / QGC UDP Port
 
+        # Secondary MAVLink UDP Proxy Settings
+        self.udp_sock_sec = None
+        self.udp_thread_sec = None
+        self.udp_client_addr_sec = None
+        self.udp_port_sec = 14556
+        self.udp_tx_port_sec = 2228
+
         # Parse state
         self.usb_mux_parser = MuxParser()
         self.local_mav_parser = PythonMavlinkParser(on_gps_cb=self._on_drone_gps_parsed)
@@ -197,6 +204,21 @@ class SerialConnection:
                          "This typically means Mission Planner/QGC is already running or port is in use. "
                          "Direct UDP telemetry proxy is disabled, but config/switching will work normally.")
 
+            # Try to bind the secondary MAVLink UDP Port 14556
+            try:
+                self.udp_sock_sec = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock_sec.bind(('127.0.0.1', self.udp_port_sec))
+                self.udp_sock_sec.settimeout(0.1)
+
+                # Start background thread to read from 14556
+                self.udp_thread_sec = threading.Thread(target=self._udp_loop_sec, daemon=True)
+                self.udp_thread_sec.start()
+                self.log(f"Secondary MAVLink UDP proxy server successfully started on port {self.udp_port_sec}, transmitting to port {self.udp_tx_port_sec}.")
+            except OSError as e:
+                self.udp_sock_sec = None
+                self.udp_thread_sec = None
+                self.log(f"Warning: Could not bind secondary MAVLink UDP port {self.udp_port_sec} ({e}).")
+
             return True
         except Exception as e:
             self.log(f"Error connecting to serial port: {e}")
@@ -209,6 +231,8 @@ class SerialConnection:
             self.read_thread.join(timeout=1.0)
         if self.udp_thread:
             self.udp_thread.join(timeout=1.0)
+        if self.udp_thread_sec:
+            self.udp_thread_sec.join(timeout=1.0)
 
         if self.ser and self.ser.is_open:
             self.ser.close()
@@ -218,6 +242,11 @@ class SerialConnection:
             self.udp_sock.close()
         self.udp_sock = None
         self.udp_client_addr = None
+
+        if self.udp_sock_sec:
+            self.udp_sock_sec.close()
+        self.udp_sock_sec = None
+        self.udp_client_addr_sec = None
 
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
@@ -312,13 +341,41 @@ class SerialConnection:
                                     # Forward MAVLink packet bytes to the local visual map parser!
                                     for byte in payload:
                                         self.local_mav_parser.parse_byte(byte)
+
+                                    # 1. Forward to primary UDP port client (Standard 14550)
                                     if self.udp_sock and self.udp_client_addr:
                                         try:
                                             self.udp_sock.sendto(payload, self.udp_client_addr)
                                         except Exception:
                                             pass
+
+                                    # 2. Forward to secondary UDP transmit port (Port 2228)
+                                    if self.udp_sock_sec:
+                                        try:
+                                            self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+                                        except Exception:
+                                            pass
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
+                    time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _udp_loop_sec(self):
+        while self.running:
+            if self.udp_sock_sec:
+                try:
+                    data, addr = self.udp_sock_sec.recvfrom(2048)
+                    if data:
+                        self.udp_client_addr_sec = addr
+                        if self.ser and self.ser.is_open:
+                            framed = mux_encode(CHAN_MAVLINK, data)
+                            self.ser.write(framed)
+                            self.ser.flush()
+                except socket.timeout:
+                    pass
+                except Exception as e:
+                    self.log(f"Error in secondary UDP proxy thread: {e}")
                     time.sleep(0.1)
             else:
                 time.sleep(0.1)
