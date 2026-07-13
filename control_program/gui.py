@@ -16,6 +16,54 @@ VRX_FREQ_TABLE = [
 
 BANDS_LIST = ["Band A", "Band B", "Band E", "Fatshark/F", "Raceband", "Lowband/L"]
 
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, container, *args, **kwargs):
+        super().__init__(container, *args, **kwargs)
+        self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
+            )
+        )
+
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+
+        # Make sure the scrollable frame expands horizontally to fill the canvas width
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+
+        self.canvas.bind('<Enter>', self._bound_to_mousewheel)
+        self.canvas.bind('<Leave>', self._unbound_to_mousewheel)
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _bound_to_mousewheel(self, event):
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
+
+    def _unbound_to_mousewheel(self, event):
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _on_mousewheel(self, event):
+        if event.num == 4:
+            self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self.canvas.yview_scroll(1, "units")
+        else:
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
 class ConfiguratorApp:
     def __init__(self, root):
         self.root = root
@@ -83,20 +131,20 @@ class ConfiguratorApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=15, pady=5)
 
-        # Tab 1: Module Switcher Mode Configuration
-        tab_mode = ttk.Frame(self.notebook)
-        self.notebook.add(tab_mode, text="JR Module Switcher")
-        self.setup_switcher_tab(tab_mode)
+        # Tab 1: Module Switcher Mode Configuration (Scrollable)
+        self.tab_mode_scroll = ScrollableFrame(self.notebook)
+        self.notebook.add(self.tab_mode_scroll, text="JR Module Switcher")
+        self.setup_switcher_tab(self.tab_mode_scroll.scrollable_frame)
 
-        # Tab 2: Servo & Antenna Tracker Setup (Contains Calibration, Mode switching, Calibrate button, and reduced Map)
-        tab_tracker = ttk.Frame(self.notebook)
-        self.notebook.add(tab_tracker, text="Antenna Tracker Setup")
-        self.setup_tracker_tab(tab_tracker)
+        # Tab 2: Servo & Antenna Tracker Setup (Scrollable)
+        self.tab_tracker_scroll = ScrollableFrame(self.notebook)
+        self.notebook.add(self.tab_tracker_scroll, text="Antenna Tracker Setup")
+        self.setup_tracker_tab(self.tab_tracker_scroll.scrollable_frame)
 
-        # Tab 3: VRX I2C & Remote Channel Settings
-        tab_vrx = ttk.Frame(self.notebook)
-        self.notebook.add(tab_vrx, text="VRX & Switches Config")
-        self.setup_vrx_tab(tab_vrx)
+        # Tab 3: VRX I2C & Remote Channel Settings (Scrollable)
+        self.tab_vrx_scroll = ScrollableFrame(self.notebook)
+        self.notebook.add(self.tab_vrx_scroll, text="VRX & Switches Config")
+        self.setup_vrx_tab(self.tab_vrx_scroll.scrollable_frame)
 
         # Bottom Console Log Frame
         log_frame = ttk.LabelFrame(self.root, text=" System Console Log ")
