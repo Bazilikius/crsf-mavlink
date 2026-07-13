@@ -349,6 +349,10 @@ class ConfiguratorApp:
 
     # ------------------- Config Received Event -------------------
     def on_config_received(self, config):
+        # Schedule the UI updates safely on the main GUI thread!
+        self.root.after(0, self._on_config_received_main_thread, config)
+
+    def _on_config_received_main_thread(self, config):
         # Update switcher tab
         self.mode_var.set(config['system_mode'])
 
