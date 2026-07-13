@@ -75,7 +75,7 @@ The PC Configurator application allows real-time switching between JR module mod
 1. Ensure Python 3 is installed.
 2. Install dependencies:
    ```bash
-   pip install pyserial
+   pip install pyserial tkintermapview
    ```
 3. Run the application:
    * GUI Mode (requires display):

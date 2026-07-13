@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
+import tkintermapview
 from serial_conn import SerialConnection
 
 # FT System 5.8G Frequencies Matrix (6 Bands x 8 Channels)
@@ -19,10 +20,22 @@ class ConfiguratorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Dual Raspberry Pi Pico Mux & Tracker Configurator")
-        self.root.geometry("680x880") # Increased height slightly to accommodate new switch config
-        self.root.resizable(False, False)
+        self.root.geometry("1100x890") # Made wider to support side-by-side Live Satellite View / Mini Map
+        self.root.resizable(True, True)
 
-        self.conn = SerialConnection(on_config_received_cb=self.on_config_received, log_message_cb=self.log)
+        self.conn = SerialConnection(
+            on_config_received_cb=self.on_config_received,
+            on_telemetry_received_cb=self.on_telemetry_received,
+            log_message_cb=self.log
+        )
+
+        # State variables
+        self.always_on_top_var = tk.BooleanVar(value=False)
+        self.tracking_mode_var = tk.StringVar(value="auto") # "auto" or "manual"
+        self.uav_marker = None
+        self.home_marker = None
+        self.last_known_uav_pos = None
+        self.last_known_home_pos = None
 
         # Configure styles
         style = ttk.Style()
@@ -35,27 +48,43 @@ class ConfiguratorApp:
         self.refresh_ports()
 
     def create_widgets(self):
-        # Top Frame - Connection Bar
-        conn_frame = ttk.LabelFrame(self.root, text=" 1. PC Serial Port Connection ")
-        conn_frame.pack(fill="x", padx=15, pady=5)
+        # Master Grid Layout - Left Panel (Controls), Right Panel (Mini Map Satellite View)
+        main_pane = ttk.PanedWindow(self.root, orient="horizontal")
+        main_pane.pack(fill="both", expand=True)
 
-        ttk.Label(conn_frame, text="COM Port:").pack(side="left", padx=10, pady=8)
+        left_container = ttk.Frame(main_pane)
+        main_pane.add(left_container, weight=3)
+
+        right_container = ttk.Frame(main_pane)
+        main_pane.add(right_container, weight=4)
+
+        # Left Panel Widgets
+        # Top Connection & Controls Bar
+        conn_frame = ttk.LabelFrame(left_container, text=" 1. PC Serial Port Connection ")
+        conn_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(conn_frame, text="COM Port:").pack(side="left", padx=5, pady=5)
         self.port_var = tk.StringVar()
-        self.port_combo = ttk.Combobox(conn_frame, textvariable=self.port_var, width=15, state="readonly")
-        self.port_combo.pack(side="left", padx=10, pady=8)
+        self.port_combo = ttk.Combobox(conn_frame, textvariable=self.port_var, width=12, state="readonly")
+        self.port_combo.pack(side="left", padx=5, pady=5)
 
         self.btn_refresh = ttk.Button(conn_frame, text="Refresh", command=self.refresh_ports)
-        self.btn_refresh.pack(side="left", padx=5, pady=8)
+        self.btn_refresh.pack(side="left", padx=3, pady=5)
 
         self.btn_connect = ttk.Button(conn_frame, text="Connect", command=self.toggle_connection)
-        self.btn_connect.pack(side="left", padx=5, pady=8)
+        self.btn_connect.pack(side="left", padx=3, pady=5)
+
+        self.chk_always_on_top = ttk.Checkbutton(
+            conn_frame, text="Always on Top", variable=self.always_on_top_var, command=self.toggle_always_on_top
+        )
+        self.chk_always_on_top.pack(side="left", padx=10, pady=5)
 
         self.lbl_status = ttk.Label(conn_frame, text="Disconnected", font=('Segoe UI', 10, 'italic'), foreground='red')
-        self.lbl_status.pack(side="right", padx=15, pady=8)
+        self.lbl_status.pack(side="right", padx=10, pady=5)
 
         # Notebook for Tabs
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=15, pady=5)
+        self.notebook = ttk.Notebook(left_container)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
         # Tab 1: Module Switcher Mode Configuration
         tab_mode = ttk.Frame(self.notebook)
@@ -73,11 +102,47 @@ class ConfiguratorApp:
         self.setup_vrx_tab(tab_vrx)
 
         # Bottom Console Log Frame
-        log_frame = ttk.LabelFrame(self.root, text=" System Console Log ")
-        log_frame.pack(fill="both", expand=True, padx=15, pady=5)
+        log_frame = ttk.LabelFrame(left_container, text=" System Console Log ")
+        log_frame.pack(fill="both", expand=False, padx=10, pady=5)
 
         self.txt_log = tk.Text(log_frame, height=5, wrap="word", state="disabled", font=('Courier New', 9))
-        self.txt_log.pack(fill="both", expand=True, padx=10, pady=5)
+        self.txt_log.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Right Panel - Live Interactive Satellite Map View
+        map_outer_frame = ttk.LabelFrame(right_container, text=" 2. Live Satellite Mini-Map View ")
+        map_outer_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Add Track Control Header inside map outer frame
+        map_hdr_frame = ttk.Frame(map_outer_frame)
+        map_hdr_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(map_hdr_frame, text="Antenna Tracking Mode:", font=('Segoe UI', 10, 'bold')).pack(side="left", padx=5)
+
+        self.rb_auto = ttk.Radiobutton(
+            map_hdr_frame, text="Auto Track Mode", variable=self.tracking_mode_var, value="auto", command=self.on_tracking_mode_changed
+        )
+        self.rb_auto.pack(side="left", padx=10)
+
+        self.rb_manual = ttk.Radiobutton(
+            map_hdr_frame, text="Manual Track Mode", variable=self.tracking_mode_var, value="manual", command=self.on_tracking_mode_changed
+        )
+        self.rb_manual.pack(side="left", padx=10)
+
+        self.btn_cal_set = ttk.Button(
+            map_hdr_frame, text="Calibrate AZ (Set Current)", command=self.on_calibrate_azimuth_zero
+        )
+        self.btn_cal_set.pack(side="right", padx=5)
+
+        # Embed the interactive map widget
+        self.map_view = tkintermapview.TkinterMapView(map_outer_frame, corner_radius=10)
+        self.map_view.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Set Google Satellite Map as Default Tile Server
+        self.map_view.set_tile_server("https://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", max_zoom=22)
+        self.map_view.set_zoom(15)
+
+        # Start at default position
+        self.map_view.set_position(0.0, 0.0)
 
     def log(self, msg):
         self.txt_log.config(state="normal")
@@ -118,6 +183,49 @@ class ConfiguratorApp:
             self.btn_connect['text'] = "Connect"
             self.lbl_status.config(text="Disconnected", foreground='red')
             self.log("Serial port disconnected.")
+
+    def toggle_always_on_top(self):
+        state = self.always_on_top_var.get()
+        self.root.attributes("-topmost", state)
+        self.log(f"Always on Top set to: {state}")
+
+    def on_tracking_mode_changed(self):
+        mode = self.tracking_mode_var.get()
+        # Toggle tracking mode between Auto and Manual Control!
+        manual_val = 1 if mode == "manual" else 0
+        if self.conn.set_cam_switch_config(
+            active_camera=1 if self.active_cam_var.get() == "VRX Camera" else 0,
+            cam_rc_channel=self.cam_rc_chan_var.get(),
+            manual_override=manual_val
+        ):
+            self.pot_override_var.set(mode == "manual")
+            self.log(f"Tracking mode switched to: {mode.upper()} tracking.")
+        else:
+            self.log("Failed to send tracking mode change command.")
+
+    def on_calibrate_azimuth_zero(self):
+        if self.conn.calibrate_azimuth_zero():
+            self.log("Successfully sent Calibrate Azimuth Zero Command.")
+        else:
+            self.log("Failed to send Calibrate Azimuth command.")
+
+    # ------------------- Telemetry & Mapping Updates -------------------
+    def on_telemetry_received(self, data):
+        self.root.after(0, self._on_telemetry_received_main_thread, data)
+
+    def _on_telemetry_received_main_thread(self, data):
+        lat = data.get('lat', 0.0)
+        lon = data.get('lon', 0.0)
+        alt = data.get('alt', 0.0)
+
+        # Log & Update Drone Position Marker
+        if self.uav_marker:
+            self.uav_marker.set_position(lat, lon)
+        else:
+            self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position", marker_color_circle="red", marker_color_path="orange")
+            self.map_view.set_position(lat, lon)
+
+        self.last_known_uav_pos = (lat, lon)
 
     # ------------------- Tab Setup Methods -------------------
     def setup_switcher_tab(self, parent):
@@ -540,10 +648,23 @@ class ConfiguratorApp:
             self.ent_home_alt.delete(0, tk.END)
             self.ent_home_alt.insert(0, f"{config['home_alt']:.1f}")
 
+            # Draw or update Ground Station Marker on map
+            lat, lon = config['home_lat'], config['home_lon']
+            if self.home_marker:
+                self.home_marker.set_position(lat, lon)
+            else:
+                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", marker_color_circle="blue")
+                self.map_view.set_position(lat, lon)
+            self.last_known_home_pos = (lat, lon)
+
         # Update Cam Switch & Pot Overrides
         self.cam_rc_chan_var.set(config['cam_rc_chan'])
         self.active_cam_var.set("VRX Camera" if config['active_camera'] == 1 else "Analog Camera")
         self.pot_override_var.set(config['manual_override'] == 1)
+
+        # Update tracking mode radio selection based on override
+        t_mode = "manual" if config['manual_override'] == 1 else "auto"
+        self.tracking_mode_var.set(t_mode)
 
         # Update live feedback display labels
         self.lbl_live_az.config(text=f"Live Azimuth: {config['live_az']}° (360° Limit)")

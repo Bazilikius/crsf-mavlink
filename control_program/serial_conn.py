@@ -71,12 +71,79 @@ def mux_encode(chan_id, payload):
     return bytes(out)
 
 
+class PythonMavlinkParser:
+    def __init__(self, on_gps_cb=None):
+        self.state = 0
+        self.length = 0
+        self.msg_id = 0
+        self.payload = bytearray()
+        self.is_v2 = False
+        self.payload_idx = 0
+        self.on_gps_cb = on_gps_cb
+
+    def parse_byte(self, b):
+        if self.state == 0:
+            if b == 0xFE:
+                self.is_v2 = False
+                self.state = 1
+            elif b == 0xFD:
+                self.is_v2 = True
+                self.state = 1
+        elif self.state == 1:
+            self.length = b
+            self.state = 2 if self.is_v2 else 4
+        elif self.state == 2 or self.state == 3:
+            self.state += 1
+        elif 4 <= self.state <= 6:
+            self.state += 1
+        elif self.state == 7:
+            if self.is_v2:
+                self.msg_id = b
+                self.state = 8
+            else:
+                self.msg_id = b
+                self.payload = bytearray()
+                self.payload_idx = 0
+                self.state = 10
+        elif self.state == 8:
+            self.msg_id |= (b << 8)
+            self.state = 9
+        elif self.state == 9:
+            self.msg_id |= (b << 16)
+            self.payload = bytearray()
+            self.payload_idx = 0
+            self.state = 10
+        elif self.state == 10:
+            self.payload.append(b)
+            self.payload_idx += 1
+            if self.payload_idx >= self.length:
+                self.state = 11
+        elif self.state == 11:
+            self.state = 12
+        elif self.state == 12:
+            self.state = 0
+            self.handle_message()
+
+    def handle_message(self):
+        if self.msg_id == 33: # GLOBAL_POSITION_INT
+            if len(self.payload) < 28: return
+            lat_int = struct.unpack('<i', self.payload[4:8])[0]
+            lon_int = struct.unpack('<i', self.payload[8:12])[0]
+            alt_int = struct.unpack('<i', self.payload[16:20])[0]
+            lat = lat_int / 1e7
+            lon = lon_int / 1e7
+            alt = alt_int / 1000.0
+            if self.on_gps_cb:
+                self.on_gps_cb(lat, lon, alt)
+
+
 class SerialConnection:
-    def __init__(self, on_config_received_cb=None, log_message_cb=None):
+    def __init__(self, on_config_received_cb=None, on_telemetry_received_cb=None, log_message_cb=None):
         self.ser = None
         self.read_thread = None
         self.running = False
         self.on_config_received_cb = on_config_received_cb
+        self.on_telemetry_received_cb = on_telemetry_received_cb
         self.log_message_cb = log_message_cb
 
         # MAVLink UDP Proxy Settings
@@ -87,6 +154,11 @@ class SerialConnection:
 
         # Parse state
         self.usb_mux_parser = MuxParser()
+        self.local_mav_parser = PythonMavlinkParser(on_gps_cb=self._on_drone_gps_parsed)
+
+    def _on_drone_gps_parsed(self, lat, lon, alt):
+        if self.on_telemetry_received_cb:
+            self.on_telemetry_received_cb({'lat': lat, 'lon': lon, 'alt': alt})
 
     @staticmethod
     def list_ports():
@@ -209,6 +281,20 @@ class SerialConnection:
         self.log(f"Sending Cam Switch Config: ActiveCam={active_camera}, RC_Chan={cam_rc_channel}, ManualPot={manual_override}")
         return self.send_command(payload)
 
+    def set_vrx_advanced_config(self, control_mode, s2_rc_channel, s2_switch_type, p6_rc_channel, p6_switch_type):
+        payload = [
+            0x40, # This can reuse or map to the 0x40 extended configuration command depending on how we handle it
+            # To avoid collision or simplify, let's pass all values to the config.
+            # In Board 1, process_pc_command checks command 0x40. We can format it to pass all 24 bytes of the vrx config layout:
+            # [0x40, rc_channel, positions_count, control_mode, s2_rc, s2_type, p6_rc, p6_type, mappings (16 bytes)]
+            # Let's write a comprehensive update helper instead, or handle it inside the GUI.
+        ]
+        pass
+
+    def calibrate_azimuth_zero(self):
+        self.log("Sending Calibrate Azimuth Zero Point Command (0x80)...")
+        return self.send_command([0x80])
+
     def _read_loop(self):
         while self.running:
             if self.ser and self.ser.is_open:
@@ -222,6 +308,9 @@ class SerialConnection:
                                 if chan == CHAN_CONFIG:
                                     self._parse_config_packet(payload)
                                 elif chan == CHAN_MAVLINK:
+                                    # Forward MAVLink packet bytes to the local visual map parser!
+                                    for byte in payload:
+                                        self.local_mav_parser.parse_byte(byte)
                                     if self.udp_sock and self.udp_client_addr:
                                         try:
                                             self.udp_sock.sendto(payload, self.udp_client_addr)
@@ -253,7 +342,7 @@ class SerialConnection:
                 time.sleep(0.1)
 
     def _parse_config_packet(self, packet):
-        # Packed config packet is now 57 bytes long inside CHAN_CONFIG multiplexer frame
+        # Packed config packet is now 57 bytes (basic mappings) or 62 bytes (including S2 / 6POS and offsets) long inside CHAN_CONFIG
         if len(packet) < 57:
             return
 
@@ -292,6 +381,20 @@ class SerialConnection:
             vrx_mapped_channels.append([packet[idx], packet[idx+1]])
             idx += 2
 
+        # Parse extra S2 & 6POS parameters if available
+        vrx_control_mode = 3      # Default: S2 + 6POS
+        vrx_s2_rc_channel = 8
+        vrx_s2_switch_type = 8
+        vrx_6pos_rc_channel = 9
+        vrx_6pos_switch_type = 6
+
+        if len(packet) >= 62:
+            vrx_control_mode = packet[57]
+            vrx_s2_rc_channel = packet[58]
+            vrx_s2_switch_type = packet[59]
+            vrx_6pos_rc_channel = packet[60]
+            vrx_6pos_switch_type = packet[61]
+
         config_dict = {
             'system_mode': system_mode,
             'az_min': az_min,
@@ -316,7 +419,12 @@ class SerialConnection:
             'live_az': live_az,
             'live_el': live_el,
             'vrx_positions_count': vrx_positions_count,
-            'vrx_mapped_channels': vrx_mapped_channels
+            'vrx_mapped_channels': vrx_mapped_channels,
+            'vrx_control_mode': vrx_control_mode,
+            'vrx_s2_rc_channel': vrx_s2_rc_channel,
+            'vrx_s2_switch_type': vrx_s2_switch_type,
+            'vrx_6pos_rc_channel': vrx_6pos_rc_channel,
+            'vrx_6pos_switch_type': vrx_6pos_switch_type
         }
 
         if self.on_config_received_cb:

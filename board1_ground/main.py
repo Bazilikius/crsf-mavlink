@@ -159,6 +159,9 @@ class SystemConfig:
         self.vrx_6pos_rc_channel = 9   # 6POS default channel 9
         self.vrx_6pos_switch_type = 6  # 6POS default switch type: 6pos
 
+        # Calibration offsets
+        self.azimuth_offset_deg = 0
+
 config = SystemConfig()
 mux_parser = MuxParser()
 pc_mux_parser = MuxParser()
@@ -340,10 +343,14 @@ def tracker_read_potentiometers():
     raw_az = adc_pot_az.read_u16()
     raw_el = adc_pot_el.read_u16()
 
-    config.live_azimuth_deg = int((raw_az * 360) / 65535)
+    # Calculate initial raw azimuth degrees
+    raw_az_deg = int((raw_az * 360) / 65535)
+
+    # Apply calibrated zero reference offset
+    config.live_azimuth_deg = (raw_az_deg - config.azimuth_offset_deg) % 360
     config.live_elevation_deg = int((raw_el * 180) / 65535)
 
-    az_pct = raw_az / 65535.0
+    az_pct = (config.live_azimuth_deg / 360.0)
     if config.azimuth_reversed:
         az_pct = 1.0 - az_pct
     az_range = config.azimuth_max_us - config.azimuth_min_us
@@ -472,7 +479,9 @@ class MavlinkParser:
 
             az_deg = math.atan2(x, y) * (180.0 / math.pi)
             if az_deg < 0: az_deg += 360.0
-            config.live_azimuth_deg = int(az_deg)
+
+            # Apply Azimuth Zero Reference Offset!
+            config.live_azimuth_deg = int((az_deg - config.azimuth_offset_deg) % 360)
 
             dist = math.sqrt(x*x + y*y)
             el_deg = 0.0
@@ -481,7 +490,8 @@ class MavlinkParser:
             el_deg = max(0.0, min(el_deg, 180.0))
             config.live_elevation_deg = int(el_deg)
 
-            az_pct = az_deg / 360.0
+            # Map to servos
+            az_pct = config.live_azimuth_deg / 360.0
             if config.azimuth_reversed: az_pct = 1.0 - az_pct
             az_us = config.azimuth_min_us + int(az_pct * (config.azimuth_max_us - config.azimuth_min_us))
 
@@ -582,8 +592,6 @@ def process_pc_command(payload):
                 config.vrx_mapped_channels[i][1] = payload[idx+1]
                 idx += 2
 
-            # Trigger setup update based on control modes
-            # If mapping table mode is selected, default to first mapping slot
             if config.vrx_control_mode == 4:
                 b, ch = config.vrx_mapped_channels[0]
                 vrx_set_band_channel(b, ch)
@@ -594,6 +602,13 @@ def process_pc_command(payload):
         config.cam_rc_channel = payload[2]
         config.manual_override = payload[3]
         vrx_set_cam_switch(config.active_camera)
+    elif cmd == 0x80: # Set Current Azimuth as Zero Point Calibration!
+        # Set current potentiometer read heading as the zero azimuth heading calibration offset!
+        raw_az = adc_pot_az.read_u16()
+        raw_az_deg = int((raw_az * 360) / 65535)
+        config.azimuth_offset_deg = raw_az_deg
+        config.live_azimuth_deg = 0 # Calibrated immediately to 0
+        send_config_to_pc()
 
 # CRSF RC Channel Decoder for VRX/Cam Toggles
 crsf_state = 0
@@ -656,7 +671,6 @@ def process_crsf_byte(b):
                 s2_val = channels[config.vrx_s2_rc_channel - 1]
                 if 172 <= s2_val <= 1811:
                     s2_pos = resolve_switch_position(s2_val, config.vrx_s2_switch_type)
-                    # Video channel mapped directly: s2_pos clamped to 0..7
                     target_chan = min(s2_pos, 7)
                     if target_chan != config.vrx_channel:
                         vrx_set_band_channel(config.vrx_band, target_chan)
@@ -667,7 +681,6 @@ def process_crsf_byte(b):
                 p6_val = channels[config.vrx_6pos_rc_channel - 1]
                 if 172 <= p6_val <= 1811:
                     p6_pos = resolve_switch_position(p6_val, config.vrx_6pos_switch_type)
-                    # Video band mapped directly: p6_pos clamped to 0..5 (Band A, B, E, F, R, L)
                     target_band = min(p6_pos, 5)
                     if target_band != config.vrx_band:
                         vrx_set_band_channel(target_band, config.vrx_channel)
@@ -714,6 +727,14 @@ def main():
     vrx_init()
     oled_init()
 
+    # === Safe Physical Servo Homing Sequence ===
+    # Drive Elevation servo to -10 degrees (888us) on boot to home mechanical structure safely!
+    update_servos(config.azimuth_trim_us, 888)
+    time.sleep_ms(1200) # Wait 1.2 seconds for safe homing
+    # Move smoothly back to standard 0-degree point (1000us)
+    update_servos(config.azimuth_trim_us, config.elevation_min_us)
+    time.sleep_ms(300)
+
     last_pot_update_ms = 0
     last_oled_update_ms = 0
 
@@ -734,39 +755,39 @@ def main():
             last_oled_update_ms = now
             oled_update_display()
 
-        # 3. Read incoming bytes from USB stdin (VCP) non-blocking using select.select()
-        r, _, _ = select.select([sys.stdin], [], [], 0)
-        if r:
-            b = read_stdin_byte()
-            if b is not None:
-                success, chan, payload = pc_mux_parser.parse_byte(b)
-                if success:
-                    if chan == CHAN_CONFIG:
-                        process_pc_command(payload)
-                    elif chan == CHAN_MAVLINK:
-                        uart1.write(mux_encode(CHAN_MAVLINK, payload))
-
-        # 4. Read incoming bytes from UART1 (Board 2 inter-board link)
-        if uart1.any():
-            b_buf = uart1.read()
-            if b_buf:
-                for b in b_buf:
-                    success, chan, payload = mux_parser.parse_byte(b)
+        # 3. Unified Poll for non-blocking I/O (handling both USB Stdin and inter-board UART1)
+        events = poll.poll(0)
+        for obj, event in events:
+            if obj == sys.stdin and (event & select.POLLIN):
+                b = read_stdin_byte()
+                if b is not None:
+                    success, chan, payload = pc_mux_parser.parse_byte(b)
                     if success:
-                        if chan == CHAN_MAVLINK:
-                            enc_val = mux_encode(CHAN_MAVLINK, payload)
-                            write_stdout_bytes(enc_val)
-
-                            for byte in payload:
-                                mav_parser.parse_byte(byte)
-                        elif chan == CHAN_CRSF:
-                            enc_val = mux_encode(CHAN_CRSF, payload)
-                            write_stdout_bytes(enc_val)
-
-                            for byte in payload:
-                                process_crsf_byte(byte)
-                        elif chan == CHAN_CONFIG:
+                        if chan == CHAN_CONFIG:
                             process_pc_command(payload)
+                        elif chan == CHAN_MAVLINK:
+                            uart1.write(mux_encode(CHAN_MAVLINK, payload))
+
+            elif obj == uart1 and (event & select.POLLIN):
+                b_buf = uart1.read()
+                if b_buf:
+                    for b in b_buf:
+                        success, chan, payload = mux_parser.parse_byte(b)
+                        if success:
+                            if chan == CHAN_MAVLINK:
+                                enc_val = mux_encode(CHAN_MAVLINK, payload)
+                                write_stdout_bytes(enc_val)
+
+                                for byte in payload:
+                                    mav_parser.parse_byte(byte)
+                            elif chan == CHAN_CRSF:
+                                enc_val = mux_encode(CHAN_CRSF, payload)
+                                write_stdout_bytes(enc_val)
+
+                                for byte in payload:
+                                    process_crsf_byte(byte)
+                            elif chan == CHAN_CONFIG:
+                                process_pc_command(payload)
 
 if __name__ == '__main__':
     main()
