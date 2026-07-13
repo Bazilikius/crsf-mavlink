@@ -80,6 +80,8 @@ PIN_JR2_TX = 8
 PIN_JR2_RX = 9
 PIN_JR1_PWR = 12
 PIN_JR2_PWR = 13
+PIN_SERVO_AZ = 14  # Azimuth Servo connected to Board 2
+PIN_SERVO_EL = 15  # Elevation Servo connected to Board 2
 
 # --- Global Operational Mode ---
 MODE_JR1_ALL = 1
@@ -99,6 +101,23 @@ uart0 = machine.UART(0, baudrate=115200, tx=machine.Pin(PIN_JR1_TX), rx=machine.
 # 3. Power Enable Pins
 jr1_pwr_pin = machine.Pin(PIN_JR1_PWR, machine.Pin.OUT)
 jr2_pwr_pin = machine.Pin(PIN_JR2_PWR, machine.Pin.OUT)
+
+# 4. Servo PWMs on Board 2
+pwm_az = machine.PWM(machine.Pin(PIN_SERVO_AZ))
+pwm_az.freq(50)
+
+pwm_el = machine.PWM(machine.Pin(PIN_SERVO_EL))
+pwm_el.freq(50)
+
+# --- Helper Servo Driver ---
+def set_servo_pwm(pwm_obj, pulse_us):
+    # Map pulse width to duty_u16: pulse_us / 20000 * 65535
+    duty = int((pulse_us * 65535) / 20000)
+    pwm_obj.duty_u16(duty)
+
+# Initialize servos to neutral position (1500us)
+set_servo_pwm(pwm_az, 1500)
+set_servo_pwm(pwm_el, 1500)
 
 # --- PIO Soft-UART Driver for JR Module 2 (CRSF @ 420000 bps) ---
 @rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT)
@@ -223,7 +242,6 @@ def parse_and_forward_jr1_mixed(b):
         jr1_mav_buf.append(b)
         target_len = (jr1_mav_len + 12) if jr1_mav_is_v2 else (jr1_mav_len + 8)
         if len(jr1_mav_buf) >= target_len:
-            # Package and forward frame to Board 1
             uart1.write(mux_encode(CHAN_MAVLINK, jr1_mav_buf))
             jr1_mav_state = 0
 
@@ -233,6 +251,12 @@ def switcher_process_command(payload):
     cmd = payload[0]
     if cmd == 0x10:
         switcher_set_mode(payload[1])
+    elif cmd == 0x70: # Direct Servo Drive Command
+        if len(payload) >= 5:
+            az_us = (payload[1] << 8) | payload[2]
+            el_us = (payload[3] << 8) | payload[4]
+            set_servo_pwm(pwm_az, az_us)
+            set_servo_pwm(pwm_el, el_us)
 
 # --- Main Polling Engine ---
 def main():

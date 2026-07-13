@@ -1,6 +1,6 @@
 # Dual YD-RP2040 CRSF & MAVLink Multiplexer, Switcher, VRX Controller & Antenna Tracker
 
-This system utilizes two YD-RP2040 boards connected via high-speed UART to multiplex MAVLink, CRSF, and configuration commands into a single physical serial link. It also features a PC-side graphical configuration software, antenna tracking, and a VRX module controller.
+This system utilizes two YD-RP2040 boards running MicroPython, connected via a high-speed UART1 inter-board link, to multiplex MAVLink, CRSF, and configuration commands dynamically. It features a PC-side configuration software with a MAVLink UDP bridge, antenna tracking, and a VRX module controller.
 
 ---
 
@@ -10,10 +10,10 @@ This system utilizes two YD-RP2040 boards connected via high-speed UART to multi
 +------------------------------------+          High-Speed UART Link           +------------------------------------+
 |        BOARD 1 (Ground Station)    | <=====================================> |         BOARD 2 (RF Switcher)      |
 +------------------------------------+                (UART 1)                 +------------------------------------+
-  | (USB CDC 0)  | (USB CDC 1)  | (I2C)                                          | (UART 0)            | (PIO SoftUART)
-  v              v              v                                                v                     v
-Windows COM     PC GUI         VRX Module                                     JR Module 1           JR Module 2
-(MAVLink)       Control        (I2C address 0x35)                             (CRSF+MAVLink)        (CRSF Only)
+                  | (USB VCP)                                                            | (UART 0)            | (PIO SoftUART)
+                  v                                                                      v                     v
+            PC Configurator                                                           JR Module 1           JR Module 2
+            (MAVLink UDP Port 14550)                                                  (CRSF+MAVLink)        (CRSF Only)
 ```
 
 ---
@@ -24,18 +24,23 @@ Windows COM     PC GUI         VRX Module                                     JR
 * **High-Speed Inter-Board UART (UART 1)**:
   * **TX**: `GPIO 4` -> Connect to Board 2 `GPIO 5` (RX)
   * **RX**: `GPIO 5` -> Connect to Board 2 `GPIO 4` (TX)
-* **Servos**:
-  * **Azimuth Servo (Pan)**: `GPIO 14` (PWM Output)
-  * **Elevation Servo (Tilt)**: `GPIO 15` (PWM Output)
-* **VRX Module Control (I2C 0)**:
-  * **SDA**: `GPIO 16` -> Connect to VRX I2C SDA
-  * **SCL**: `GPIO 17` -> Connect to VRX I2C SCL
+* **Potentiometers**:
+  * **Azimuth Pot (Manual override)**: `GPIO 26` (ADC 0)
+  * **Elevation Pot (Manual override)**: `GPIO 27` (ADC 1)
+* **Cam Switch**:
+  * **Cam Select**: `GPIO 18` -> High = VRX Camera active, Low = Analog Camera active
+* **OLED Display & VRX SYNTH (I2C 0)**:
+  * **SDA**: `GPIO 16` -> Connect to OLED SDA and VRX SDA
+  * **SCL**: `GPIO 17` -> Connect to OLED SCL and VRX SCL
   * *Note: Pull-up resistors (typically 4.7kΩ) are recommended on both I2C lines.*
 
 ### Board 2: RF Module Switcher (YD-RP2040)
 * **High-Speed Inter-Board UART (UART 1)**:
   * **TX**: `GPIO 4` -> Connect to Board 1 `GPIO 5` (RX)
   * **RX**: `GPIO 5` -> Connect to Board 1 `GPIO 4` (TX)
+* **Servos**:
+  * **Azimuth Servo (Pan, 360°)**: `GPIO 14` (PWM Output)
+  * **Elevation Servo (Tilt, 180°)**: `GPIO 15` (PWM Output)
 * **JR Module 1 (UART 0) - CRSF + MAVLink**:
   * **TX**: `GPIO 0` -> Connect to JR Module 1 RX
   * **RX**: `GPIO 1` -> Connect to JR Module 1 TX
@@ -73,9 +78,14 @@ The PC Configurator application allows real-time switching between JR module mod
    pip install pyserial
    ```
 3. Run the application:
-   ```bash
-   python control_program/main.py
-   ```
-4. Connect Board 1 to your computer via USB. Windows will display two Virtual COM ports:
-   * **COM Port 1 (CDC 0)**: Connect your Ground Station software (e.g., Mission Planner, QGroundControl) directly to this port to stream MAVLink.
-   * **COM Port 2 (CDC 1)**: Select this COM port in the PC Configurator application and click **Connect**.
+   * GUI Mode (requires display):
+     ```bash
+     python control_program/main.py
+     ```
+   * Headless CLI Mode:
+     ```bash
+     python control_program/main.py --cli
+     ```
+4. Connect Board 1 to your computer via USB. Select its USB COM port in the PC Configurator and click **Connect**.
+5. Once connected:
+   * **GCS Integration**: The PC Configurator runs a **Transparent MAVLink UDP Proxy Server on Port 14550**. Open your Ground Control Station (e.g., Mission Planner or QGroundControl), select connection type **UDP**, set port to **14550**, and click Connect. Telemetry streams seamlessly while avoiding Windows COM port conflicts!

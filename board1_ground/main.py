@@ -74,8 +74,6 @@ def mux_encode(chan_id, payload):
     return bytes(out)
 
 # --- Hardware Configuration Pin Mappings ---
-PIN_SERVO_AZ = 14
-PIN_SERVO_EL = 15
 PIN_I2C_SDA = 16
 PIN_I2C_SCL = 17
 PIN_UART_TX = 4
@@ -122,6 +120,7 @@ class SystemConfig:
 
 config = SystemConfig()
 mux_parser = MuxParser()
+pc_mux_parser = MuxParser()
 
 # --- Hardware Initializations ---
 # 1. UART1 for inter-board communication
@@ -130,29 +129,21 @@ uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine
 # 2. I2C0 for SSD1306 and VRX (shared I2C0 bus)
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=100000)
 
-# 3. Servo PWMs
-pwm_az = machine.PWM(machine.Pin(PIN_SERVO_AZ))
-pwm_az.freq(50)
-
-pwm_el = machine.PWM(machine.Pin(PIN_SERVO_EL))
-pwm_el.freq(50)
-
-# 4. ADCs for potentiometers
+# 3. ADCs for potentiometers
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
 adc_pot_el = machine.ADC(machine.Pin(PIN_ADC_POT_EL))
 
-# 5. Camera Switch
+# 4. Camera Switch
 cam_switch_pin = machine.Pin(PIN_CAM_SWITCH, machine.Pin.OUT)
 
 # --- Helper Functions ---
-def set_servo_pwm(pwm_obj, pulse_us, min_us, max_us):
-    pulse_us = max(min_us, min(pulse_us, max_us))
-    duty = int((pulse_us * 65535) / 20000)
-    pwm_obj.duty_u16(duty)
-
 def update_servos(az_us, el_us):
-    set_servo_pwm(pwm_az, az_us, config.azimuth_min_us, config.azimuth_max_us)
-    set_servo_pwm(pwm_el, el_us, config.elevation_min_us, config.elevation_max_us)
+    az_us = max(config.azimuth_min_us, min(az_us, config.azimuth_max_us))
+    el_us = max(config.elevation_min_us, min(el_us, config.elevation_max_us))
+
+    cmd = bytearray([0x70, (az_us >> 8) & 0xFF, az_us & 0xFF, (el_us >> 8) & 0xFF, el_us & 0xFF])
+    enc = mux_encode(CHAN_CONFIG, cmd)
+    uart1.write(enc)
 
 # VRX Synthesizer programming (RTC6715 / RX5808 via I2C)
 VRX_I2C_ADDR = 0x35
@@ -201,7 +192,6 @@ OLED_INIT_CMDS = [
     0xDB, 0x40, 0xA4, 0xA6, 0xAF
 ]
 
-# Pre-allocated single bytearray to prevent garbage collector pauses/allocation
 _oled_cmd_buf = bytearray(2)
 def oled_send_cmd(cmd):
     _oled_cmd_buf[0] = 0x00
@@ -211,7 +201,6 @@ def oled_send_cmd(cmd):
     except Exception:
         pass
 
-# Pre-allocated data block header
 _oled_data_hdr = bytearray([0x40])
 def oled_send_data(data):
     try:
@@ -500,11 +489,8 @@ def send_config_to_pc():
     payload.append((config.live_elevation_deg >> 8) & 0xFF)
     payload.append(config.live_elevation_deg & 0xFF)
 
-    packet = bytearray([0xCF, 0xFC]) + payload
-    cksum = sum(payload) & 0xFF
-    packet.append(cksum)
-
-    sys.stdout.buffer.write(packet)
+    payload = mux_encode(CHAN_CONFIG, payload)
+    sys.stdout.write(payload.decode('latin-1'))
 
 def process_pc_command(payload):
     if not payload: return
@@ -610,43 +596,67 @@ def process_crsf_byte(b):
 def main():
     vrx_init()
     oled_init()
-    update_servos(config.azimuth_trim_us, config.elevation_trim_us)
 
-    last_update_ms = 0
+    last_pot_update_ms = 0
+    last_oled_update_ms = 0
+
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
     poll.register(uart1, select.POLLIN)
 
     while True:
         now = time.ticks_ms()
-        if time.ticks_diff(now, last_update_ms) >= 50:
-            last_update_ms = now
+
+        # 1. Read manual potentiometers (50ms interval)
+        if time.ticks_diff(now, last_pot_update_ms) >= 50:
+            last_pot_update_ms = now
             tracker_read_potentiometers()
+
+        # 2. Update SSD1306 Display (500ms interval to completely avoid UART starve bottlenecks)
+        if time.ticks_diff(now, last_oled_update_ms) >= 500:
+            last_oled_update_ms = now
             oled_update_display()
 
         events = poll.poll(1)
         if events:
             for fd, event in events:
                 if fd == sys.stdin:
-                    # Non-blocking USB VCP read from stdin
-                    data = sys.stdin.buffer.read(32)
-                    if data:
-                        process_pc_command(data)
+                    # Non-blocking stdin reading compatible with standard MicroPython on RP2040
+                    data_str = sys.stdin.read(1)
+                    if data_str:
+                        # Feed the incoming byte to our PC Mux Parser
+                        for char in data_str:
+                            b = ord(char)
+                            success, chan, payload = pc_mux_parser.parse_byte(b)
+                            if success:
+                                if chan == CHAN_CONFIG:
+                                    process_pc_command(payload)
+                                elif chan == CHAN_MAVLINK:
+                                    # Forward MAVLink over UART1 to Board 2
+                                    uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 elif fd == uart1:
-                    # Board 2 link input
                     b_buf = uart1.read()
-                    for b in b_buf:
-                        success, chan, payload = mux_parser.parse_byte(b)
-                        if success:
-                            if chan == CHAN_MAVLINK:
-                                sys.stdout.buffer.write(payload)
-                                for byte in payload:
-                                    mav_parser.parse_byte(byte)
-                            elif chan == CHAN_CRSF:
-                                for byte in payload:
-                                    process_crsf_byte(byte)
-                            elif chan == CHAN_CONFIG:
-                                process_pc_command(payload)
+                    if b_buf:
+                        for b in b_buf:
+                            success, chan, payload = mux_parser.parse_byte(b)
+                            if success:
+                                if chan == CHAN_MAVLINK:
+                                    # Forward MAVLink wrapped in Mux frame over USB to PC Configurator
+                                    enc_val = mux_encode(CHAN_MAVLINK, payload)
+                                    sys.stdout.write(enc_val.decode('latin-1'))
+
+                                    # Parse locally for tracker math
+                                    for byte in payload:
+                                        mav_parser.parse_byte(byte)
+                                elif chan == CHAN_CRSF:
+                                    # Forward CRSF wrapped in Mux frame over USB to PC Configurator
+                                    enc_val = mux_encode(CHAN_CRSF, payload)
+                                    sys.stdout.write(enc_val.decode('latin-1'))
+
+                                    for byte in payload:
+                                        process_crsf_byte(byte)
+                                elif chan == CHAN_CONFIG:
+                                    process_pc_command(payload)
 
 if __name__ == '__main__':
     main()
