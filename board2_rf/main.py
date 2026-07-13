@@ -126,23 +126,26 @@ set_servo_pwm(pwm_az, 1500)
 set_servo_pwm(pwm_el, 1500)
 
 # --- PIO Soft-UART Driver for JR Module 2 (CRSF @ 420000 bps) ---
+# Cycle-by-cycle timing analysis at 3,360,000 Hz SM clock (exactly 8 cycles per bit = 420,000 bps):
+# - Start/Stop bits: 1 instruction cycle + 7 delay cycles = 8 cycles total.
+# - Data bit loop: 'out'/'in_' instruction with [6] delay (7 cycles) + 'jmp' (1 cycle) = exactly 8 cycles per bit!
 @rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT)
 def pio_uart_tx():
     pull()
-    set(x, 7)            .side(0) [7] # Start bit (low) for 8 cycles
+    set(x, 7)            .side(0) [7] # Start bit (low) for 8 cycles (1 set + 7 delay)
     label("bit_loop")
-    out(pins, 1)                  [6] # Out 1 bit, wait 7 cycles total
-    jmp(x_dec, "bit_loop")
-    nop()                .side(1) [7] # Stop bit (high) for 8 cycles
+    out(pins, 1)                  [6] # Out 1 bit (1 out + 6 delay = 7 cycles)
+    jmp(x_dec, "bit_loop")            # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles!
+    nop()                .side(1) [7] # Stop bit (high) for 8 cycles (1 nop + 7 delay)
 
 @rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT)
 def pio_uart_rx():
     label("start")
     wait(0, pin, 0)
-    set(x, 7)            [10]
+    set(x, 7)            [10]         # 1 set + 10 delay = 11 cycles. Sampling at cycle 11 aligns near middle of first bit.
     label("bit_loop")
-    in_(pins, 1)         [6]
-    jmp(x_dec, "bit_loop")
+    in_(pins, 1)         [6]          # In 1 bit (1 in + 6 delay = 7 cycles)
+    jmp(x_dec, "bit_loop")            # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles per bit!
     push()
     jmp("start")
 

@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import math
 import tkintermapview
 from serial_conn import SerialConnection
@@ -37,6 +37,10 @@ class ConfiguratorApp:
         self.ant_dir_path = None # Rotating real-time antenna direction line path object
         self.last_known_uav_pos = None
         self.last_known_home_pos = None
+
+        # programmatically generated 10px high-contrast solid circular dots
+        self.gs_dot_img = None
+        self.uav_dot_img = None
 
         # Configure styles
         style = ttk.Style()
@@ -158,10 +162,55 @@ class ConfiguratorApp:
             self.log("Failed to send tracking mode change command.")
 
     def on_calibrate_azimuth_zero(self):
-        if self.conn.calibrate_azimuth_zero():
-            self.log("Successfully sent Calibrate Azimuth Zero Command.")
+        # 1. Ask the user for the target calibration reference azimuth angle (Step 1 of Wizard)
+        val = simpledialog.askinteger(
+            "Azimuth Calibration",
+            "Step 1: Enter desired target calibration reference angle in degrees (0 - 359):\n"
+            "(e.g., enter '0' for North alignment, '90' for East, etc.)",
+            parent=self.root,
+            minvalue=0,
+            maxvalue=359,
+            initialvalue=0
+        )
+        if val is None:
+            self.log("Azimuth calibration wizard cancelled by user.")
+            return
+
+        # 2. Inform user they must point/drive the tracker to match this alignment (Step 2 of Wizard)
+        messagebox.showinfo(
+            "Drive Antenna Tracker",
+            f"Step 2: Please point/drive the physical antenna tracker until it is physically aligned with your target reference of {val}°.\n\n"
+            "Once aligned, click OK to proceed to final calibration confirmation.",
+            parent=self.root
+        )
+
+        # 3. Final alignment confirmation before applying (Step 3 of Wizard)
+        confirm = messagebox.askyesno(
+            "Confirm Calibration Offset Alignment",
+            f"Step 3: Confirm tracker is correctly pointing to {val}°?\n\n"
+            "Clicking YES will lock this current physical potentiometer position as representing the reference angle.",
+            parent=self.root
+        )
+        if not confirm:
+            self.log("Azimuth calibration offset cancelled at confirmation stage.")
+            return
+
+        # Transmit command 0x80 to lock calibration
+        if self.conn.calibrate_azimuth_zero(ref_deg=val):
+            self.log(f"Successfully locked calibration offset. Current position is calibrated to {val}°.")
+            messagebox.showinfo(
+                "Calibration Success",
+                f"Antenna tracker successfully calibrated!\n\n"
+                f"Current direction has been mapped to exactly {val}°.",
+                parent=self.root
+            )
         else:
             self.log("Failed to send Calibrate Azimuth command.")
+            messagebox.showerror(
+                "Error",
+                "Failed to send calibration command. Please check serial connection status.",
+                parent=self.root
+            )
 
     # ------------------- Telemetry & Mapping Updates -------------------
     def on_telemetry_received(self, data):
@@ -176,15 +225,17 @@ class ConfiguratorApp:
         if self.uav_marker:
             self.uav_marker.set_position(lat, lon)
         else:
-            self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position", marker_color_circle="red", marker_color_path="orange")
+            # Use 10px circular icon programmatically generated to satisfy "reduce the antenna markers to 10 pixels"
+            self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position", icon=self.uav_dot_img)
             self.map_view.set_position(lat, lon)
 
         self.last_known_uav_pos = (lat, lon)
 
     def _update_antenna_direction_line(self, home_lat, home_lon, azimuth_deg):
         # Calculate real-time heading endpoint path on map using spherical trigonometry
-        # Choose a visible segment length of about 500 meters (approx 0.0045 degrees lat)
-        distance_deg = 0.0045
+        # To make it only for a distance of exactly 30km on the map scale:
+        # 30 km = 30000 meters / 111139 meters per degree = 0.269932 degrees of latitude.
+        distance_deg = 0.269932
         rad = math.radians(azimuth_deg)
 
         # Calculate target endpoint coordinates
@@ -338,6 +389,10 @@ class ConfiguratorApp:
         # Original size was full panel, now reduced to width=450, height=245.
         self.map_view = tkintermapview.TkinterMapView(parent, width=450, height=245, corner_radius=10)
         self.map_view.grid(row=13, column=0, columnspan=4, sticky="nsew", padx=20, pady=5)
+
+        # Generate 10px circular markers programmatically to fulfill "reduce the antenna markers to 10 pixels"
+        self.gs_dot_img = self.make_dot_image("blue")
+        self.uav_dot_img = self.make_dot_image("red")
 
         # Set Google Satellite Hybrid Map to display satellite imagery overlaid with roads, city labels, and country borders.
         # lyrs=y is the standard Google Maps layer code for hybrid satellite views with roads/labels/borders.
@@ -555,7 +610,8 @@ class ConfiguratorApp:
             if self.home_marker:
                 self.home_marker.set_position(lat, lon)
             else:
-                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", marker_color_circle="blue")
+                # Use 10px circular icon programmatically generated to satisfy "reduce the antenna markers to 10 pixels"
+                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", icon=self.gs_dot_img)
             self.last_known_home_pos = (lat, lon)
         else:
             self.log("Failed to send Home position configuration.")
@@ -693,7 +749,8 @@ class ConfiguratorApp:
             if self.home_marker:
                 self.home_marker.set_position(lat, lon)
             else:
-                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", marker_color_circle="blue")
+                # Use 10px circular icon programmatically generated to satisfy "reduce the antenna markers to 10 pixels"
+                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", icon=self.gs_dot_img)
 
             if is_new_home:
                 self.map_view.set_position(lat, lon)

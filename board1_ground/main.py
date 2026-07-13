@@ -606,8 +606,14 @@ def process_pc_command(payload):
         # Set current potentiometer read heading as the zero azimuth heading calibration offset!
         raw_az = adc_pot_az.read_u16()
         raw_az_deg = int((raw_az * 360) / 65535)
-        config.azimuth_offset_deg = raw_az_deg
-        config.live_azimuth_deg = 0 # Calibrated immediately to 0
+
+        # Read the target reference degrees from the payload if provided
+        ref_deg = 0
+        if len(payload) >= 3:
+            ref_deg = (payload[1] << 8) | payload[2]
+
+        config.azimuth_offset_deg = (raw_az_deg - ref_deg) % 360
+        config.live_azimuth_deg = ref_deg # Calibrated immediately to matching reference degrees
         send_config_to_pc()
 
 # CRSF RC Channel Decoder for VRX/Cam Toggles

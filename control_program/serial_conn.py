@@ -291,9 +291,10 @@ class SerialConnection:
         ]
         pass
 
-    def calibrate_azimuth_zero(self):
-        self.log("Sending Calibrate Azimuth Zero Point Command (0x80)...")
-        return self.send_command([0x80])
+    def calibrate_azimuth_zero(self, ref_deg=0):
+        self.log(f"Sending Calibrate Azimuth command to target reference: {ref_deg}° (0x80)...")
+        payload = [0x80, (ref_deg >> 8) & 0xFF, ref_deg & 0xFF]
+        return self.send_command(payload)
 
     def _read_loop(self):
         while self.running:
