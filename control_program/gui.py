@@ -20,7 +20,7 @@ class ConfiguratorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Dual Raspberry Pi Pico Mux & Tracker Configurator")
-        self.root.geometry("1100x890") # Made wider to support side-by-side Live Satellite View / Mini Map
+        self.root.geometry("690x920") # Returned to a compact single-column layout
         self.root.resizable(True, True)
 
         self.conn = SerialConnection(
@@ -34,6 +34,7 @@ class ConfiguratorApp:
         self.tracking_mode_var = tk.StringVar(value="auto") # "auto" or "manual"
         self.uav_marker = None
         self.home_marker = None
+        self.ant_dir_path = None # Rotating real-time antenna direction line path object
         self.last_known_uav_pos = None
         self.last_known_home_pos = None
 
@@ -48,50 +49,39 @@ class ConfiguratorApp:
         self.refresh_ports()
 
     def create_widgets(self):
-        # Master Grid Layout - Left Panel (Controls), Right Panel (Mini Map Satellite View)
-        main_pane = ttk.PanedWindow(self.root, orient="horizontal")
-        main_pane.pack(fill="both", expand=True)
+        # Single-column compact layout. Main panel widgets go directly onto root frame.
+        conn_frame = ttk.LabelFrame(self.root, text=" 1. PC Serial Port Connection ")
+        conn_frame.pack(fill="x", padx=15, pady=5)
 
-        left_container = ttk.Frame(main_pane)
-        main_pane.add(left_container, weight=3)
-
-        right_container = ttk.Frame(main_pane)
-        main_pane.add(right_container, weight=4)
-
-        # Left Panel Widgets
-        # Top Connection & Controls Bar
-        conn_frame = ttk.LabelFrame(left_container, text=" 1. PC Serial Port Connection ")
-        conn_frame.pack(fill="x", padx=10, pady=5)
-
-        ttk.Label(conn_frame, text="COM Port:").pack(side="left", padx=5, pady=5)
+        ttk.Label(conn_frame, text="COM Port:").pack(side="left", padx=10, pady=8)
         self.port_var = tk.StringVar()
-        self.port_combo = ttk.Combobox(conn_frame, textvariable=self.port_var, width=12, state="readonly")
-        self.port_combo.pack(side="left", padx=5, pady=5)
+        self.port_combo = ttk.Combobox(conn_frame, textvariable=self.port_var, width=15, state="readonly")
+        self.port_combo.pack(side="left", padx=10, pady=8)
 
         self.btn_refresh = ttk.Button(conn_frame, text="Refresh", command=self.refresh_ports)
-        self.btn_refresh.pack(side="left", padx=3, pady=5)
+        self.btn_refresh.pack(side="left", padx=5, pady=8)
 
         self.btn_connect = ttk.Button(conn_frame, text="Connect", command=self.toggle_connection)
-        self.btn_connect.pack(side="left", padx=3, pady=5)
+        self.btn_connect.pack(side="left", padx=5, pady=8)
 
         self.chk_always_on_top = ttk.Checkbutton(
             conn_frame, text="Always on Top", variable=self.always_on_top_var, command=self.toggle_always_on_top
         )
-        self.chk_always_on_top.pack(side="left", padx=10, pady=5)
+        self.chk_always_on_top.pack(side="left", padx=15, pady=8)
 
         self.lbl_status = ttk.Label(conn_frame, text="Disconnected", font=('Segoe UI', 10, 'italic'), foreground='red')
-        self.lbl_status.pack(side="right", padx=10, pady=5)
+        self.lbl_status.pack(side="right", padx=15, pady=8)
 
         # Notebook for Tabs
-        self.notebook = ttk.Notebook(left_container)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=15, pady=5)
 
         # Tab 1: Module Switcher Mode Configuration
         tab_mode = ttk.Frame(self.notebook)
         self.notebook.add(tab_mode, text="JR Module Switcher")
         self.setup_switcher_tab(tab_mode)
 
-        # Tab 2: Servo & Antenna Tracker Setup
+        # Tab 2: Servo & Antenna Tracker Setup (Contains Calibration, Mode switching, Calibrate button, and reduced Map)
         tab_tracker = ttk.Frame(self.notebook)
         self.notebook.add(tab_tracker, text="Antenna Tracker Setup")
         self.setup_tracker_tab(tab_tracker)
@@ -102,47 +92,11 @@ class ConfiguratorApp:
         self.setup_vrx_tab(tab_vrx)
 
         # Bottom Console Log Frame
-        log_frame = ttk.LabelFrame(left_container, text=" System Console Log ")
-        log_frame.pack(fill="both", expand=False, padx=10, pady=5)
+        log_frame = ttk.LabelFrame(self.root, text=" System Console Log ")
+        log_frame.pack(fill="x", expand=False, padx=15, pady=5)
 
         self.txt_log = tk.Text(log_frame, height=5, wrap="word", state="disabled", font=('Courier New', 9))
-        self.txt_log.pack(fill="both", expand=True, padx=5, pady=5)
-
-        # Right Panel - Live Interactive Satellite Map View
-        map_outer_frame = ttk.LabelFrame(right_container, text=" 2. Live Satellite Mini-Map View ")
-        map_outer_frame.pack(fill="both", expand=True, padx=10, pady=5)
-
-        # Add Track Control Header inside map outer frame
-        map_hdr_frame = ttk.Frame(map_outer_frame)
-        map_hdr_frame.pack(fill="x", padx=10, pady=5)
-
-        ttk.Label(map_hdr_frame, text="Antenna Tracking Mode:", font=('Segoe UI', 10, 'bold')).pack(side="left", padx=5)
-
-        self.rb_auto = ttk.Radiobutton(
-            map_hdr_frame, text="Auto Track Mode", variable=self.tracking_mode_var, value="auto", command=self.on_tracking_mode_changed
-        )
-        self.rb_auto.pack(side="left", padx=10)
-
-        self.rb_manual = ttk.Radiobutton(
-            map_hdr_frame, text="Manual Track Mode", variable=self.tracking_mode_var, value="manual", command=self.on_tracking_mode_changed
-        )
-        self.rb_manual.pack(side="left", padx=10)
-
-        self.btn_cal_set = ttk.Button(
-            map_hdr_frame, text="Calibrate AZ (Set Current)", command=self.on_calibrate_azimuth_zero
-        )
-        self.btn_cal_set.pack(side="right", padx=5)
-
-        # Embed the interactive map widget
-        self.map_view = tkintermapview.TkinterMapView(map_outer_frame, corner_radius=10)
-        self.map_view.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Set Google Satellite Map as Default Tile Server
-        self.map_view.set_tile_server("https://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", max_zoom=22)
-        self.map_view.set_zoom(15)
-
-        # Start at default position
-        self.map_view.set_position(0.0, 0.0)
+        self.txt_log.pack(fill="both", expand=True, padx=10, pady=5)
 
     def log(self, msg):
         self.txt_log.config(state="normal")
@@ -226,6 +180,37 @@ class ConfiguratorApp:
             self.map_view.set_position(lat, lon)
 
         self.last_known_uav_pos = (lat, lon)
+
+    def _update_antenna_direction_line(self, home_lat, home_lon, azimuth_deg):
+        # Calculate real-time heading endpoint path on map using spherical trigonometry
+        # Choose a visible segment length of about 500 meters (approx 0.0045 degrees lat)
+        distance_deg = 0.0045
+        rad = math.radians(azimuth_deg)
+
+        # Calculate target endpoint coordinates
+        target_lat = home_lat + (distance_deg * math.cos(rad))
+        # Account for latitude shrinking longitude spacing
+        lat_scale = math.cos(math.radians(home_lat))
+        if abs(lat_scale) < 0.01:
+            lat_scale = 1.0
+        target_lon = home_lon + ((distance_deg * math.sin(rad)) / lat_scale)
+
+        # Clear previous path to avoid cluttering the display
+        if self.ant_dir_path:
+            try:
+                self.ant_dir_path.delete()
+            except Exception:
+                pass
+
+        # Draw high-visibility line from GS center coordinates in real time pointing along raw azimuth
+        try:
+            self.ant_dir_path = self.map_view.set_path(
+                [(home_lat, home_lon), (target_lat, target_lon)],
+                color="#00FF00", # Neon Green high contrast path line
+                width=3
+            )
+        except Exception as e:
+            self.log(f"Map draw path error: {e}")
 
     # ------------------- Tab Setup Methods -------------------
     def setup_switcher_tab(self, parent):
@@ -322,7 +307,45 @@ class ConfiguratorApp:
         self.chk_el_rev.grid(row=9, column=1, columnspan=2, sticky="w", padx=10, pady=2)
 
         self.btn_save_cal = ttk.Button(parent, text="Upload Calibration", command=self.on_save_calibration)
-        self.btn_save_cal.grid(row=10, column=1, columnspan=3, sticky="ew", padx=10, pady=10)
+        self.btn_save_cal.grid(row=10, column=1, columnspan=3, sticky="ew", padx=10, pady=5)
+
+        # 2. Embedded Dynamic Map and Track Control Settings (50% scale relative to original layout)
+        div_map = ttk.Separator(parent, orient="horizontal")
+        div_map.grid(row=11, column=0, columnspan=4, sticky="ew", pady=5)
+
+        # Map tracking control bar inside Tab 2
+        map_hdr_frame = ttk.Frame(parent)
+        map_hdr_frame.grid(row=12, column=0, columnspan=4, sticky="ew", padx=15, pady=2)
+
+        ttk.Label(map_hdr_frame, text="Tracking:", font=('Segoe UI', 9, 'bold')).pack(side="left", padx=2)
+
+        self.rb_auto = ttk.Radiobutton(
+            map_hdr_frame, text="Auto", variable=self.tracking_mode_var, value="auto", command=self.on_tracking_mode_changed
+        )
+        self.rb_auto.pack(side="left", padx=5)
+
+        self.rb_manual = ttk.Radiobutton(
+            map_hdr_frame, text="Manual", variable=self.tracking_mode_var, value="manual", command=self.on_tracking_mode_changed
+        )
+        self.rb_manual.pack(side="left", padx=5)
+
+        self.btn_cal_set = ttk.Button(
+            map_hdr_frame, text="Calibrate AZ (Set Cur)", command=self.on_calibrate_azimuth_zero, style="TButton"
+        )
+        self.btn_cal_set.pack(side="right", padx=2)
+
+        # Map widget (reduced size by approximately 50%)
+        # Original size was full panel, now reduced to width=450, height=245.
+        self.map_view = tkintermapview.TkinterMapView(parent, width=450, height=245, corner_radius=10)
+        self.map_view.grid(row=13, column=0, columnspan=4, sticky="nsew", padx=20, pady=5)
+
+        # Set Google Satellite Hybrid Map to display satellite imagery overlaid with roads, city labels, and country borders.
+        # lyrs=y is the standard Google Maps layer code for hybrid satellite views with roads/labels/borders.
+        self.map_view.set_tile_server("https://mt0.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", max_zoom=22)
+        self.map_view.set_zoom(15)
+
+        # Start at default position
+        self.map_view.set_position(0.0, 0.0)
 
     def setup_vrx_tab(self, parent):
         # 1. Video Control Mode Frame
@@ -523,6 +546,17 @@ class ConfiguratorApp:
 
         if self.conn.set_home_position(lat, lon, alt):
             self.log(f"Set home position: Lat={lat}, Lon={lon}, Alt={alt}")
+
+            # Immediately move the map to center on the newly set home point coordinate setting!
+            self.map_view.set_position(lat, lon)
+            self.map_view.set_zoom(16)
+
+            # Draw or update Ground Station Marker on map
+            if self.home_marker:
+                self.home_marker.set_position(lat, lon)
+            else:
+                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", marker_color_circle="blue")
+            self.last_known_home_pos = (lat, lon)
         else:
             self.log("Failed to send Home position configuration.")
 
@@ -650,12 +684,26 @@ class ConfiguratorApp:
 
             # Draw or update Ground Station Marker on map
             lat, lon = config['home_lat'], config['home_lon']
+
+            # If the home position has changed, center/relocate the map view to this location automatically!
+            is_new_home = (self.last_known_home_pos is None or
+                           abs(self.last_known_home_pos[0] - lat) > 1e-6 or
+                           abs(self.last_known_home_pos[1] - lon) > 1e-6)
+
             if self.home_marker:
                 self.home_marker.set_position(lat, lon)
             else:
                 self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", marker_color_circle="blue")
+
+            if is_new_home:
                 self.map_view.set_position(lat, lon)
+                self.map_view.set_zoom(16)
+
             self.last_known_home_pos = (lat, lon)
+
+        # Draw and rotate the real-time antenna direction line on the map!
+        if self.last_known_home_pos:
+            self._update_antenna_direction_line(self.last_known_home_pos[0], self.last_known_home_pos[1], config['live_az'])
 
         # Update Cam Switch & Pot Overrides
         self.cam_rc_chan_var.set(config['cam_rc_chan'])
