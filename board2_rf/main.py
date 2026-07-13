@@ -78,10 +78,16 @@ def mux_encode(chan_id, payload):
 # --- Hardware Configuration Pin Mappings ---
 PIN_UART1_TX = 4
 PIN_UART1_RX = 5
+
 PIN_JR1_TX = 0
 PIN_JR1_RX = 1
+
+PIN_JR1_CRSF_TX = 10
+PIN_JR1_CRSF_RX = 11
+
 PIN_JR2_TX = 8
 PIN_JR2_RX = 9
+
 PIN_JR1_PWR = 12
 PIN_JR2_PWR = 13
 PIN_SERVO_AZ = 14  # Azimuth Servo connected to Board 2
@@ -99,17 +105,11 @@ mux_parser = MuxParser()
 # 1. UART1 for Board 1 link (Baud 460800)
 uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX))
 
-# 2. UART0 for JR Module 1 (Baud 115200 for CRSF/MAVLink)
-uart0 = machine.UART(0, baudrate=115200, tx=machine.Pin(PIN_JR1_TX), rx=machine.Pin(PIN_JR1_RX))
-
-# 3. Soft-UART input RX pin initialization (PULL_UP to guarantee signal integrity!)
-jr2_rx_pin = machine.Pin(PIN_JR2_RX, machine.Pin.IN, machine.Pin.PULL_UP)
-
-# 4. Power Enable Pins
+# 2. Power Enable Pins
 jr1_pwr_pin = machine.Pin(PIN_JR1_PWR, machine.Pin.OUT)
 jr2_pwr_pin = machine.Pin(PIN_JR2_PWR, machine.Pin.OUT)
 
-# 5. Servo PWMs on Board 2
+# 3. Servo PWMs on Board 2
 pwm_az = machine.PWM(machine.Pin(PIN_SERVO_AZ))
 pwm_az.freq(50)
 
@@ -125,10 +125,7 @@ def set_servo_pwm(pwm_obj, pulse_us):
 set_servo_pwm(pwm_az, 1500)
 set_servo_pwm(pwm_el, 1500)
 
-# --- PIO Soft-UART Driver for JR Module 2 (CRSF @ 420000 bps) ---
-# Cycle-by-cycle timing analysis at 3,360,000 Hz SM clock (exactly 8 cycles per bit = 420,000 bps):
-# - Start/Stop bits: 1 instruction cycle + 7 delay cycles = 8 cycles total.
-# - Data bit loop: 'out'/'in_' instruction with [6] delay (7 cycles) + 'jmp' (1 cycle) = exactly 8 cycles per bit!
+# --- PIO Soft-UART Drivers (TX / RX State Machines) ---
 @rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT)
 def pio_uart_tx():
     pull()
@@ -149,21 +146,64 @@ def pio_uart_rx():
     push()
     jmp("start")
 
-# Instantiate PIO state machines on pio0 (Frequency: 3360000 Hz)
-sm_tx = rp2.StateMachine(0, pio_uart_tx, freq=3360000, sideset_base=machine.Pin(PIN_JR2_TX), out_base=machine.Pin(PIN_JR2_TX))
-sm_rx = rp2.StateMachine(1, pio_uart_rx, freq=3360000, in_base=jr2_rx_pin)
+# --- Dynamic Baudrate and UART Configuration ---
+current_jr1_crsf_baud = 420000
+current_jr1_mav_baud = 115200
+current_jr2_crsf_baud = 420000
 
-sm_tx.active(1)
-sm_rx.active(1)
+uart0 = None
+sm_jr1_tx = None
+sm_jr1_rx = None
+sm_jr2_tx = None
+sm_jr2_rx = None
 
-def pio_write(data):
+def init_jr_uarts(jr1_crsf, jr1_mav, jr2_crsf):
+    global sm_jr1_tx, sm_jr1_rx, sm_jr2_tx, sm_jr2_rx, uart0
+
+    # Disable active state machines before reconfiguration
+    if sm_jr1_tx is not None: sm_jr1_tx.active(0)
+    if sm_jr1_rx is not None: sm_jr1_rx.active(0)
+    if sm_jr2_tx is not None: sm_jr2_tx.active(0)
+    if sm_jr2_rx is not None: sm_jr2_rx.active(0)
+
+    # 1. Re-initialize hardware UART0 for JR1 MAVLink
+    uart0 = machine.UART(0, baudrate=jr1_mav, tx=machine.Pin(PIN_JR1_TX), rx=machine.Pin(PIN_JR1_RX))
+
+    # 2. Re-initialize JR1 CRSF PIO Soft-UART on pio0 (sm 0, sm 1)
+    sm_jr1_tx = rp2.StateMachine(0, pio_uart_tx, freq=jr1_crsf * 8, sideset_base=machine.Pin(PIN_JR1_CRSF_TX), out_base=machine.Pin(PIN_JR1_CRSF_TX))
+    sm_jr1_rx = rp2.StateMachine(1, pio_uart_rx, freq=jr1_crsf * 8, in_base=machine.Pin(PIN_JR1_CRSF_RX, machine.Pin.IN, machine.Pin.PULL_UP))
+    sm_jr1_tx.active(1)
+    sm_jr1_rx.active(1)
+
+    # 3. Re-initialize JR2 CRSF PIO Soft-UART on pio0 (sm 2, sm 3)
+    sm_jr2_tx = rp2.StateMachine(2, pio_uart_tx, freq=jr2_crsf * 8, sideset_base=machine.Pin(PIN_JR2_TX), out_base=machine.Pin(PIN_JR2_TX))
+    sm_jr2_rx = rp2.StateMachine(3, pio_uart_rx, freq=jr2_crsf * 8, in_base=machine.Pin(PIN_JR2_RX, machine.Pin.IN, machine.Pin.PULL_UP))
+    sm_jr2_tx.active(1)
+    sm_jr2_rx.active(1)
+
+# Perform initial configuration on boot
+init_jr_uarts(current_jr1_crsf_baud, current_jr1_mav_baud, current_jr2_crsf_baud)
+
+# PIO Soft-UART Helper Read/Write Operations
+def pio_write_jr1(data):
     for b in data:
-        sm_tx.put(b)
+        sm_jr1_tx.put(b)
 
-def pio_read():
+def pio_read_jr1():
     buf = bytearray()
-    while sm_rx.rx_fifo():
-        val = sm_rx.get() >> 24
+    while sm_jr1_rx.rx_fifo():
+        val = sm_jr1_rx.get() >> 24
+        buf.append(val)
+    return bytes(buf) if buf else b""
+
+def pio_write_jr2(data):
+    for b in data:
+        sm_jr2_tx.put(b)
+
+def pio_read_jr2():
+    buf = bytearray()
+    while sm_jr2_rx.rx_fifo():
+        val = sm_jr2_rx.get() >> 24
         buf.append(val)
     return bytes(buf) if buf else b""
 
@@ -183,76 +223,9 @@ def switcher_set_mode(mode):
 
 switcher_set_mode(active_mode)
 
-# --- Checksum Validated Stream Splitters ---
-def crsf_crc8(ptr):
-    crc = 0
-    for b in ptr:
-        crc ^= b
-        for _ in range(8):
-            if crc & 0x80:
-                crc = ((crc << 1) ^ 0xD5) & 0xFF
-            else:
-                crc = (crc << 1) & 0xFF
-    return crc
-
-# Parsing filters for JR1 Mixed Mode (Mode 1)
-jr1_crsf_state = 0
-jr1_crsf_buf = bytearray()
-jr1_crsf_len = 0
-
-jr1_mav_state = 0
-jr1_mav_buf = bytearray()
-jr1_mav_len = 0
-jr1_mav_is_v2 = False
-
-def parse_and_forward_jr1_mixed(b):
-    global jr1_crsf_state, jr1_crsf_buf, jr1_crsf_len
-    global jr1_mav_state, jr1_mav_buf, jr1_mav_len, jr1_mav_is_v2
-
-    # --- CRSF Checksum Validated Parser ---
-    if jr1_crsf_state == 0:
-        if b in [0xC8, 0xEE, 0xEA]:
-            jr1_crsf_buf = bytearray([b])
-            jr1_crsf_state = 1
-    elif jr1_crsf_state == 1:
-        if 2 <= b <= 62:
-            jr1_crsf_buf.append(b)
-            jr1_crsf_len = b
-            jr1_crsf_state = 2
-        else:
-            jr1_crsf_state = 0
-    elif jr1_crsf_state == 2:
-        jr1_crsf_buf.append(b)
-        if len(jr1_crsf_buf) >= jr1_crsf_len + 2:
-            calc = crsf_crc8(jr1_crsf_buf[2:-1])
-            parsed = jr1_crsf_buf[-1]
-            if calc == parsed:
-                uart1.write(mux_encode(CHAN_CRSF, jr1_crsf_buf))
-            jr1_crsf_state = 0
-
-    # --- Permissive MAVLink Parser ---
-    if jr1_mav_state == 0:
-        if b == 0xFE: # v1
-            jr1_mav_is_v2 = False
-            jr1_mav_buf = bytearray([b])
-            jr1_mav_state = 1
-        elif b == 0xFD: # v2
-            jr1_mav_is_v2 = True
-            jr1_mav_buf = bytearray([b])
-            jr1_mav_state = 1
-    elif jr1_mav_state == 1:
-        jr1_mav_len = b
-        jr1_mav_buf.append(b)
-        jr1_mav_state = 2
-    elif jr1_mav_state == 2:
-        jr1_mav_buf.append(b)
-        target_len = (jr1_mav_len + 12) if jr1_mav_is_v2 else (jr1_mav_len + 8)
-        if len(jr1_mav_buf) >= target_len:
-            uart1.write(mux_encode(CHAN_MAVLINK, jr1_mav_buf))
-            jr1_mav_state = 0
-
 # --- Command Parser ---
 def switcher_process_command(payload):
+    global current_jr1_crsf_baud, current_jr1_mav_baud, current_jr2_crsf_baud
     if not payload: return
     cmd = payload[0]
     if cmd == 0x10:
@@ -263,6 +236,19 @@ def switcher_process_command(payload):
             el_us = (payload[3] << 8) | payload[4]
             set_servo_pwm(pwm_az, az_us)
             set_servo_pwm(pwm_el, el_us)
+    elif cmd == 0x40: # Extended configuration & custom baudrates payload
+        if len(payload) >= 30:
+            b1 = ((payload[24] << 8) | payload[25]) * 100
+            b2 = ((payload[26] << 8) | payload[27]) * 100
+            b3 = ((payload[28] << 8) | payload[29]) * 100
+
+            # Sanity range check (9600 to 921600 bps)
+            if 9600 <= b1 <= 921600 and 9600 <= b2 <= 921600 and 9600 <= b3 <= 921600:
+                if b1 != current_jr1_crsf_baud or b2 != current_jr1_mav_baud or b3 != current_jr2_crsf_baud:
+                    current_jr1_crsf_baud = b1
+                    current_jr1_mav_baud = b2
+                    current_jr2_crsf_baud = b3
+                    init_jr_uarts(b1, b2, b3)
 
 # --- Main Polling Engine ---
 def main():
@@ -286,31 +272,37 @@ def main():
                                         uart0.write(payload)
                                 elif chan == CHAN_CRSF:
                                     if active_mode == MODE_JR1_ALL:
-                                        uart0.write(payload)
+                                        pio_write_jr1(payload)
                                     elif active_mode in [MODE_JR2_CRSF, MODE_SIMULTANEOUS]:
-                                        pio_write(payload)
+                                        pio_write_jr2(payload)
                                 elif chan == CHAN_CONFIG:
                                     switcher_process_command(payload)
 
-        # Read active JR Module inputs (safely check if read data is not None before iterating!)
+        # Read active JR Module inputs
         if active_mode == MODE_JR1_ALL:
-            if uart0.any():
-                b_buf = uart0.read()
-                if b_buf:
-                    for b in b_buf:
-                        parse_and_forward_jr1_mixed(b)
-
-        elif active_mode == MODE_JR2_CRSF:
-            p_data = pio_read()
-            if p_data:
-                uart1.write(mux_encode(CHAN_CRSF, p_data))
-
-        elif active_mode == MODE_SIMULTANEOUS:
+            # 1. JR1 MAVLink telemetry via Hardware UART0
             if uart0.any():
                 m_data = uart0.read()
                 if m_data:
                     uart1.write(mux_encode(CHAN_MAVLINK, m_data))
-            p_data = pio_read()
+            # 2. JR1 CRSF telemetry via PIO Soft-UART (sm 0, sm 1)
+            p_data = pio_read_jr1()
+            if p_data:
+                uart1.write(mux_encode(CHAN_CRSF, p_data))
+
+        elif active_mode == MODE_JR2_CRSF:
+            p_data = pio_read_jr2()
+            if p_data:
+                uart1.write(mux_encode(CHAN_CRSF, p_data))
+
+        elif active_mode == MODE_SIMULTANEOUS:
+            # JR1 MAVLink telemetry via Hardware UART0
+            if uart0.any():
+                m_data = uart0.read()
+                if m_data:
+                    uart1.write(mux_encode(CHAN_MAVLINK, m_data))
+            # JR2 CRSF telemetry via PIO Soft-UART (sm 2, sm 3)
+            p_data = pio_read_jr2()
             if p_data:
                 uart1.write(mux_encode(CHAN_CRSF, p_data))
 

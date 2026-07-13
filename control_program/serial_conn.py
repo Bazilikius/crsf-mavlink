@@ -389,12 +389,21 @@ class SerialConnection:
         vrx_6pos_rc_channel = 9
         vrx_6pos_switch_type = 6
 
+        jr1_crsf_baud = 4200
+        jr1_mav_baud = 1152
+        jr2_crsf_baud = 4200
+
         if len(packet) >= 62:
             vrx_control_mode = packet[57]
             vrx_s2_rc_channel = packet[58]
             vrx_s2_switch_type = packet[59]
             vrx_6pos_rc_channel = packet[60]
             vrx_6pos_switch_type = packet[61]
+
+        if len(packet) >= 68:
+            jr1_crsf_baud = (packet[62] << 8) | packet[63]
+            jr1_mav_baud = (packet[64] << 8) | packet[65]
+            jr2_crsf_baud = (packet[66] << 8) | packet[67]
 
         config_dict = {
             'system_mode': system_mode,
@@ -425,7 +434,10 @@ class SerialConnection:
             'vrx_s2_rc_channel': vrx_s2_rc_channel,
             'vrx_s2_switch_type': vrx_s2_switch_type,
             'vrx_6pos_rc_channel': vrx_6pos_rc_channel,
-            'vrx_6pos_switch_type': vrx_6pos_switch_type
+            'vrx_6pos_switch_type': vrx_6pos_switch_type,
+            'jr1_crsf_baud': jr1_crsf_baud,
+            'jr1_mav_baud': jr1_mav_baud,
+            'jr2_crsf_baud': jr2_crsf_baud
         }
 
         if self.on_config_received_cb:

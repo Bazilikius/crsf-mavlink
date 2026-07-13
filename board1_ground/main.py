@@ -159,6 +159,12 @@ class SystemConfig:
         self.vrx_6pos_rc_channel = 9   # 6POS default channel 9
         self.vrx_6pos_switch_type = 6  # 6POS default switch type: 6pos
 
+        # JR Modules Baudrates Configuration (Baudrate / 100 for single byte fit)
+        # e.g., 1152 for 115200, 4200 for 420000
+        self.jr1_crsf_baud = 4200
+        self.jr1_mav_baud = 1152
+        self.jr2_crsf_baud = 4200
+
         # Calibration offsets
         self.azimuth_offset_deg = 0
 
@@ -508,7 +514,7 @@ mav_parser = MavlinkParser()
 
 # --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
-    # Build the 62-byte payload
+    # Build the 68-byte payload
     payload = bytearray([
         config.system_mode,
         (config.azimuth_min_us >> 8) & 0xFF, config.azimuth_min_us & 0xFF,
@@ -545,12 +551,20 @@ def send_config_to_pc():
         payload.append(config.vrx_mapped_channels[i][0])
         payload.append(config.vrx_mapped_channels[i][1])
 
-    # Append the 5 new S2 & 6POS VRX parameters
+    # Append the 5 S2 & 6POS VRX parameters
     payload.append(config.vrx_control_mode)
     payload.append(config.vrx_s2_rc_channel)
     payload.append(config.vrx_s2_switch_type)
     payload.append(config.vrx_6pos_rc_channel)
     payload.append(config.vrx_6pos_switch_type)
+
+    # Append the JR modules baudrate configurations (stored as 2-byte values, e.g. 115200 -> 1152)
+    payload.append((config.jr1_crsf_baud >> 8) & 0xFF)
+    payload.append(config.jr1_crsf_baud & 0xFF)
+    payload.append((config.jr1_mav_baud >> 8) & 0xFF)
+    payload.append(config.jr1_mav_baud & 0xFF)
+    payload.append((config.jr2_crsf_baud >> 8) & 0xFF)
+    payload.append(config.jr2_crsf_baud & 0xFF)
 
     packet = mux_encode(CHAN_CONFIG, payload)
     write_stdout_bytes(packet)
@@ -594,6 +608,15 @@ def process_pc_command(payload):
                 config.vrx_mapped_channels[i][0] = payload[idx]
                 config.vrx_mapped_channels[i][1] = payload[idx+1]
                 idx += 2
+
+            if len(payload) >= 30:
+                # Payload contains the 3 baudrate fields as well! (e.g. 6 bytes for 3 baudrates)
+                config.jr1_crsf_baud = (payload[idx] << 8) | payload[idx+1]
+                config.jr1_mav_baud = (payload[idx+2] << 8) | payload[idx+3]
+                config.jr2_crsf_baud = (payload[idx+4] << 8) | payload[idx+5]
+
+            # Forward the exact configuration to board 2 RF switcher over UART1
+            uart1.write(mux_encode(CHAN_CONFIG, payload))
 
             if config.vrx_control_mode == 4:
                 b, ch = config.vrx_mapped_channels[0]

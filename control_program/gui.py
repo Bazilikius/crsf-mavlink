@@ -434,7 +434,7 @@ class ConfiguratorApp:
         self.mode_var = tk.IntVar(value=3)
 
         modes = [
-            ("Mode 1: Single JR Module 1 Active (CRSF + MAVLink two-way transmission)", 1),
+            ("Mode 1: Single JR Module 1 Active (CRSF + MAVLink separate interfaces)", 1),
             ("Mode 2: Single JR Module 2 Active (CRSF only)", 2),
             ("Mode 3: Simultaneous Operation (JR1: MAVLink, JR2: CRSF)", 3)
         ]
@@ -444,7 +444,32 @@ class ConfiguratorApp:
             rb.pack(anchor="w", pady=10)
 
         lbl_desc = ttk.Label(parent, text="* Simultaneous operation leverages the split telemetry scheme to send MAVLink through JR1 and CRSF through JR2.", font=('Segoe UI', 9, 'italic'), foreground='gray')
-        lbl_desc.pack(anchor="w", padx=20, pady=25)
+        lbl_desc.pack(anchor="w", padx=20, pady=10)
+
+        # --- Baudrates configuration section ---
+        baud_frame = ttk.LabelFrame(parent, text=" Configure JR Modules Baudrates ")
+        baud_frame.pack(fill="x", padx=30, pady=10)
+
+        baud_opts = ["9600", "57600", "115200", "420000", "460800"]
+
+        ttk.Label(baud_frame, text="JR1 CRSF Baudrate:").grid(row=0, column=0, sticky="e", padx=10, pady=10)
+        self.jr1_crsf_baud_var = tk.StringVar(value="420000")
+        self.combo_jr1_crsf = ttk.Combobox(baud_frame, textvariable=self.jr1_crsf_baud_var, values=baud_opts, width=12, state="readonly")
+        self.combo_jr1_crsf.grid(row=0, column=1, sticky="w", padx=10, pady=10)
+
+        ttk.Label(baud_frame, text="JR1 MAVLink Baudrate:").grid(row=1, column=0, sticky="e", padx=10, pady=10)
+        self.jr1_mav_baud_var = tk.StringVar(value="115200")
+        self.combo_jr1_mav = ttk.Combobox(baud_frame, textvariable=self.jr1_mav_baud_var, values=baud_opts, width=12, state="readonly")
+        self.combo_jr1_mav.grid(row=1, column=1, sticky="w", padx=10, pady=10)
+
+        ttk.Label(baud_frame, text="JR2 CRSF Baudrate:").grid(row=2, column=0, sticky="e", padx=10, pady=10)
+        self.jr2_crsf_baud_var = tk.StringVar(value="420000")
+        self.combo_jr2_crsf = ttk.Combobox(baud_frame, textvariable=self.jr2_crsf_baud_var, values=baud_opts, width=12, state="readonly")
+        self.combo_jr2_crsf.grid(row=2, column=1, sticky="w", padx=10, pady=10)
+
+        # Apply Button
+        self.btn_apply_switcher = ttk.Button(parent, text="Apply Switcher & Baudrate Settings", command=self.on_apply_switcher_settings)
+        self.btn_apply_switcher.pack(padx=30, pady=15)
 
     def setup_tracker_tab(self, parent):
         lbl_home_head = ttk.Label(parent, text="Antenna Tracker Home Coordinates", style="Header.TLabel")
@@ -783,6 +808,14 @@ class ConfiguratorApp:
         self.row_widgets[idx]['lbl_freq'].config(text=f"{freq} MHz")
 
     # ------------------- Action Callbacks -------------------
+    def on_apply_switcher_settings(self):
+        mode = self.mode_var.get()
+        # Set switcher mode
+        self.conn.set_mode(mode)
+        # Apply complete VRX config (which appends switcher baudrates)
+        self.on_apply_vrx()
+        self.log(f"Switcher operational mode & baudrates updated: Mode={mode}")
+
     def on_mode_changed(self):
         mode = self.mode_var.get()
         if self.conn.set_mode(mode):
@@ -879,17 +912,34 @@ class ConfiguratorApp:
                 chan = 0
             mapped_list.append([band, chan])
 
+        # Convert baudrates to divided-by-100 values
+        try:
+            b1 = int(self.jr1_crsf_baud_var.get()) // 100
+            b2 = int(self.jr1_mav_baud_var.get()) // 100
+            b3 = int(self.jr2_crsf_baud_var.get()) // 100
+        except Exception:
+            b1 = 4200
+            b2 = 1152
+            b3 = 4200
+
         # Extended Command 0x40 formatting:
-        # [0x40, rc_chan, positions_count, vrx_control_mode, s2_rc, s2_type, p6_rc, p6_type, band_0, chan_0, ..., band_7, chan_7]
+        # [0x40, rc_chan, positions_count, vrx_control_mode, s2_rc, s2_type, p6_rc, p6_type, band_0, chan_0, ..., band_7, chan_7, jr1_crsf_h, jr1_crsf_l, jr1_mav_h, jr1_mav_l, jr2_crsf_h, jr2_crsf_l]
         payload = [0x40, rc_chan, positions, vrx_control_mode, s2_rc, s2_type, p6_rc, p6_type]
         for band, chan in mapped_list:
             payload.append(band)
             payload.append(chan)
 
+        payload.append((b1 >> 8) & 0xFF)
+        payload.append(b1 & 0xFF)
+        payload.append((b2 >> 8) & 0xFF)
+        payload.append(b2 & 0xFF)
+        payload.append((b3 >> 8) & 0xFF)
+        payload.append(b3 & 0xFF)
+
         if self.conn.send_command(payload):
-            self.log(f"Extended VRX table applied: Mode={m_str}, S2={s2_rc} ({s2_t_str}), 6POS={p6_rc} ({p6_t_str})")
+            self.log(f"Extended VRX table & Baudrates applied: Mode={m_str}, JR1_CRSF={b1*100}, JR1_MAV={b2*100}, JR2_CRSF={b3*100}")
         else:
-            self.log("Failed to apply video receiver configuration.")
+            self.log("Failed to apply video receiver & baudrates configuration.")
 
     def on_apply_cam(self):
         try:
@@ -994,6 +1044,14 @@ class ConfiguratorApp:
         self.vrx_6pos_rc_var.set(config['vrx_6pos_rc_channel'])
         p6_type_rev = {2: "2pos", 3: "3pos", 6: "6pos"}
         self.vrx_6pos_type_var.set(p6_type_rev.get(config['vrx_6pos_switch_type'], "6pos"))
+
+        # Update switcher baudrates in the GUI
+        if 'jr1_crsf_baud' in config:
+            self.jr1_crsf_baud_var.set(str(config['jr1_crsf_baud'] * 100))
+        if 'jr1_mav_baud' in config:
+            self.jr1_mav_baud_var.set(str(config['jr1_mav_baud'] * 100))
+        if 'jr2_crsf_baud' in config:
+            self.jr2_crsf_baud_var.set(str(config['jr2_crsf_baud'] * 100))
 
         # Update the 8 mapping rows from the received board config
         band_map_rev = {
