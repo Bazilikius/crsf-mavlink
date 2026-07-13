@@ -139,7 +139,7 @@ class SystemConfig:
         self.live_azimuth_deg = 0
         self.live_elevation_deg = 0
 
-        # New customizable toggle switch positions mapping for video receiver (FT System 5.8G)
+        # Customizable toggle switch positions mapping for video receiver (FT System 5.8G)
         self.vrx_positions_count = 3 # Default to a 3-position toggle switch
         self.vrx_mapped_channels = [
             [0, 0], # Pos 1 (0): Band A, Channel 1 (5865 MHz)
@@ -151,6 +151,13 @@ class SystemConfig:
             [0, 0], # Pos 7 (6): Default A1
             [0, 0]  # Pos 8 (7): Default A1
         ]
+
+        # S2 & 6POS VRX Control parameters
+        self.vrx_control_mode = 3      # 1: Only S2, 2: Only 6POS, 3: S2 + 6POS, 4: Mapping Table
+        self.vrx_s2_rc_channel = 8     # S2 default channel 8
+        self.vrx_s2_switch_type = 8    # S2 default switch type: 8pos
+        self.vrx_6pos_rc_channel = 9   # 6POS default channel 9
+        self.vrx_6pos_switch_type = 6  # 6POS default switch type: 6pos
 
 config = SystemConfig()
 mux_parser = MuxParser()
@@ -488,7 +495,7 @@ mav_parser = MavlinkParser()
 
 # --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
-    # Build the 57-byte payload
+    # Build the 62-byte payload
     payload = bytearray([
         config.system_mode,
         (config.azimuth_min_us >> 8) & 0xFF, config.azimuth_min_us & 0xFF,
@@ -519,11 +526,18 @@ def send_config_to_pc():
     payload.append((config.live_elevation_deg >> 8) & 0xFF)
     payload.append(config.live_elevation_deg & 0xFF)
 
-    # Pack the position switch table mapping (Positions count, followed by 8 custom band/channel pairs)
+    # Pack the position switch table mapping
     payload.append(config.vrx_positions_count)
     for i in range(8):
         payload.append(config.vrx_mapped_channels[i][0])
         payload.append(config.vrx_mapped_channels[i][1])
+
+    # Append the 5 new S2 & 6POS VRX parameters
+    payload.append(config.vrx_control_mode)
+    payload.append(config.vrx_s2_rc_channel)
+    payload.append(config.vrx_s2_switch_type)
+    payload.append(config.vrx_6pos_rc_channel)
+    payload.append(config.vrx_6pos_switch_type)
 
     packet = mux_encode(CHAN_CONFIG, payload)
     write_stdout_bytes(packet)
@@ -550,21 +564,29 @@ def process_pc_command(payload):
         config.home_lon = struct.unpack('<f', bytes(payload[5:9]))[0]
         config.home_alt = struct.unpack('<f', bytes(payload[9:13]))[0]
         config.home_set = True
-    elif cmd == 0x40: # Extended VRX Table configuration command
-        if len(payload) >= 19:
+    elif cmd == 0x40: # Extended VRX configuration command
+        if len(payload) >= 24:
             config.vrx_rc_channel = payload[1]
             config.vrx_positions_count = payload[2]
 
+            config.vrx_control_mode = payload[3]
+            config.vrx_s2_rc_channel = payload[4]
+            config.vrx_s2_switch_type = payload[5]
+            config.vrx_6pos_rc_channel = payload[6]
+            config.vrx_6pos_switch_type = payload[7]
+
             # Unpack 8 mappings
-            idx = 3
+            idx = 8
             for i in range(8):
                 config.vrx_mapped_channels[i][0] = payload[idx]
                 config.vrx_mapped_channels[i][1] = payload[idx+1]
                 idx += 2
 
-            # Set to initial mapped channel on update
-            b, ch = config.vrx_mapped_channels[0]
-            vrx_set_band_channel(b, ch)
+            # Trigger setup update based on control modes
+            # If mapping table mode is selected, default to first mapping slot
+            if config.vrx_control_mode == 4:
+                b, ch = config.vrx_mapped_channels[0]
+                vrx_set_band_channel(b, ch)
     elif cmd == 0x50:
         send_config_to_pc()
     elif cmd == 0x60:
@@ -578,6 +600,13 @@ crsf_state = 0
 crsf_len = 0
 crsf_type = 0
 crsf_payload = bytearray()
+
+def resolve_switch_position(val, switch_type):
+    # Map raw CRSF 172..1811 range cleanly into switch positions (0 to switch_type - 1)
+    if val < 172: val = 172
+    if val > 1811: val = 1811
+    pos = int(((val - 172) * switch_type) / 1640)
+    return max(0, min(pos, switch_type - 1))
 
 def process_crsf_byte(b):
     global crsf_state, crsf_len, crsf_type, crsf_payload
@@ -621,18 +650,55 @@ def process_crsf_byte(b):
             channels[14] = (crsf_payload[19] >> 2 | crsf_payload[20] << 6) & 0x07FF
             channels[15] = (crsf_payload[20] >> 5 | crsf_payload[21] << 3) & 0x07FF
 
-            # Process Multi-Position Switch Selectable Channel Switching!
-            vrx_ch = channels[config.vrx_rc_channel - 1]
-            if 172 <= vrx_ch <= 1811:
-                # Map standard CRSF 172..1811 range cleanly into positions (0 to count - 1)
-                pos = int(((vrx_ch - 172) * config.vrx_positions_count) / 1640)
-                pos = max(0, min(pos, config.vrx_positions_count - 1))
+            # PROCESS VRX CONTROL MODE
+            if config.vrx_control_mode == 1:
+                # 1. ONLY S2 Controls Video Channel (0 to 7)
+                s2_val = channels[config.vrx_s2_rc_channel - 1]
+                if 172 <= s2_val <= 1811:
+                    s2_pos = resolve_switch_position(s2_val, config.vrx_s2_switch_type)
+                    # Video channel mapped directly: s2_pos clamped to 0..7
+                    target_chan = min(s2_pos, 7)
+                    if target_chan != config.vrx_channel:
+                        vrx_set_band_channel(config.vrx_band, target_chan)
+                        send_config_to_pc()
 
-                # Fetch target band and channel for current position
-                target_band, target_chan = config.vrx_mapped_channels[pos]
-                if target_band != config.vrx_band or target_chan != config.vrx_channel:
-                    vrx_set_band_channel(target_band, target_chan)
-                    send_config_to_pc()
+            elif config.vrx_control_mode == 2:
+                # 2. ONLY 6POS Controls Video Band (0 to 5)
+                p6_val = channels[config.vrx_6pos_rc_channel - 1]
+                if 172 <= p6_val <= 1811:
+                    p6_pos = resolve_switch_position(p6_val, config.vrx_6pos_switch_type)
+                    # Video band mapped directly: p6_pos clamped to 0..5 (Band A, B, E, F, R, L)
+                    target_band = min(p6_pos, 5)
+                    if target_band != config.vrx_band:
+                        vrx_set_band_channel(target_band, config.vrx_channel)
+                        send_config_to_pc()
+
+            elif config.vrx_control_mode == 3:
+                # 3. S2 + 6POS Simultaneous operation: S2 sets Channel (0..7), 6POS sets Band (0..5)
+                s2_val = channels[config.vrx_s2_rc_channel - 1]
+                p6_val = channels[config.vrx_6pos_rc_channel - 1]
+                if (172 <= s2_val <= 1811) and (172 <= p6_val <= 1811):
+                    s2_pos = resolve_switch_position(s2_val, config.vrx_s2_switch_type)
+                    p6_pos = resolve_switch_position(p6_val, config.vrx_6pos_switch_type)
+
+                    target_chan = min(s2_pos, 7)
+                    target_band = min(p6_pos, 5)
+
+                    if target_chan != config.vrx_channel or target_band != config.vrx_band:
+                        vrx_set_band_channel(target_band, target_chan)
+                        send_config_to_pc()
+
+            elif config.vrx_control_mode == 4:
+                # 4. Standard Customizable Mapping Table lookup
+                vrx_ch = channels[config.vrx_rc_channel - 1]
+                if 172 <= vrx_ch <= 1811:
+                    pos = int(((vrx_ch - 172) * config.vrx_positions_count) / 1640)
+                    pos = max(0, min(pos, config.vrx_positions_count - 1))
+
+                    target_band, target_chan = config.vrx_mapped_channels[pos]
+                    if target_band != config.vrx_band or target_chan != config.vrx_channel:
+                        vrx_set_band_channel(target_band, target_chan)
+                        send_config_to_pc()
 
             # Cam Switch toggling
             cam_ch = channels[config.cam_rc_channel - 1]
@@ -678,7 +744,6 @@ def main():
                     if chan == CHAN_CONFIG:
                         process_pc_command(payload)
                     elif chan == CHAN_MAVLINK:
-                        # Forward MAVLink over UART1 to Board 2
                         uart1.write(mux_encode(CHAN_MAVLINK, payload))
 
         # 4. Read incoming bytes from UART1 (Board 2 inter-board link)
@@ -689,15 +754,12 @@ def main():
                     success, chan, payload = mux_parser.parse_byte(b)
                     if success:
                         if chan == CHAN_MAVLINK:
-                            # Forward MAVLink wrapped in Mux frame over USB to PC Configurator
                             enc_val = mux_encode(CHAN_MAVLINK, payload)
                             write_stdout_bytes(enc_val)
 
-                            # Parse locally for tracker math
                             for byte in payload:
                                 mav_parser.parse_byte(byte)
                         elif chan == CHAN_CRSF:
-                            # Forward CRSF wrapped in Mux frame over USB to PC Configurator
                             enc_val = mux_encode(CHAN_CRSF, payload)
                             write_stdout_bytes(enc_val)
 

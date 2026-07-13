@@ -102,11 +102,14 @@ uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART1_TX), rx=machin
 # 2. UART0 for JR Module 1 (Baud 115200 for CRSF/MAVLink)
 uart0 = machine.UART(0, baudrate=115200, tx=machine.Pin(PIN_JR1_TX), rx=machine.Pin(PIN_JR1_RX))
 
-# 3. Power Enable Pins
+# 3. Soft-UART input RX pin initialization (PULL_UP to guarantee signal integrity!)
+jr2_rx_pin = machine.Pin(PIN_JR2_RX, machine.Pin.IN, machine.Pin.PULL_UP)
+
+# 4. Power Enable Pins
 jr1_pwr_pin = machine.Pin(PIN_JR1_PWR, machine.Pin.OUT)
 jr2_pwr_pin = machine.Pin(PIN_JR2_PWR, machine.Pin.OUT)
 
-# 4. Servo PWMs on Board 2
+# 5. Servo PWMs on Board 2
 pwm_az = machine.PWM(machine.Pin(PIN_SERVO_AZ))
 pwm_az.freq(50)
 
@@ -115,7 +118,6 @@ pwm_el.freq(50)
 
 # --- Helper Servo Driver ---
 def set_servo_pwm(pwm_obj, pulse_us):
-    # Map pulse width to duty_u16: pulse_us / 20000 * 65535
     duty = int((pulse_us * 65535) / 20000)
     pwm_obj.duty_u16(duty)
 
@@ -126,8 +128,6 @@ set_servo_pwm(pwm_el, 1500)
 # --- PIO Soft-UART Driver for JR Module 2 (CRSF @ 420000 bps) ---
 @rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT)
 def pio_uart_tx():
-    # Frequency is 8 * 420000 = 3360000 Hz
-    # 8 cycles per bit
     pull()
     set(x, 7)            .side(0) [7] # Start bit (low) for 8 cycles
     label("bit_loop")
@@ -148,7 +148,7 @@ def pio_uart_rx():
 
 # Instantiate PIO state machines on pio0 (Frequency: 3360000 Hz)
 sm_tx = rp2.StateMachine(0, pio_uart_tx, freq=3360000, sideset_base=machine.Pin(PIN_JR2_TX), out_base=machine.Pin(PIN_JR2_TX))
-sm_rx = rp2.StateMachine(1, pio_uart_rx, freq=3360000, in_base=machine.Pin(PIN_JR2_RX))
+sm_rx = rp2.StateMachine(1, pio_uart_rx, freq=3360000, in_base=jr2_rx_pin)
 
 sm_tx.active(1)
 sm_rx.active(1)
@@ -162,7 +162,7 @@ def pio_read():
     while sm_rx.rx_fifo():
         val = sm_rx.get() >> 24
         buf.append(val)
-    return bytes(buf)
+    return bytes(buf) if buf else b""
 
 # --- Switcher Logic and Module Powering ---
 def switcher_set_mode(mode):
@@ -181,7 +181,6 @@ def switcher_set_mode(mode):
 switcher_set_mode(active_mode)
 
 # --- Checksum Validated Stream Splitters ---
-# 1. CRSF CRC-8
 def crsf_crc8(ptr):
     crc = 0
     for b in ptr:
@@ -273,30 +272,30 @@ def main():
         events = poll.poll(0)
         if events:
             for fd, event in events:
-                if fd == uart1.any(): # Or check uart1 readability
-                    pass
-            if uart1.any():
-                data = uart1.read()
-                for b in data:
-                    success, chan, payload = mux_parser.parse_byte(b)
-                    if success:
-                        if chan == CHAN_MAVLINK:
-                            if active_mode in [MODE_JR1_ALL, MODE_SIMULTANEOUS]:
-                                uart0.write(payload)
-                        elif chan == CHAN_CRSF:
-                            if active_mode == MODE_JR1_ALL:
-                                uart0.write(payload)
-                            elif active_mode in [MODE_JR2_CRSF, MODE_SIMULTANEOUS]:
-                                pio_write(payload)
-                        elif chan == CHAN_CONFIG:
-                            switcher_process_command(payload)
+                if fd == uart1:
+                    data = uart1.read()
+                    if data:
+                        for b in data:
+                            success, chan, payload = mux_parser.parse_byte(b)
+                            if success:
+                                if chan == CHAN_MAVLINK:
+                                    if active_mode in [MODE_JR1_ALL, MODE_SIMULTANEOUS]:
+                                        uart0.write(payload)
+                                elif chan == CHAN_CRSF:
+                                    if active_mode == MODE_JR1_ALL:
+                                        uart0.write(payload)
+                                    elif active_mode in [MODE_JR2_CRSF, MODE_SIMULTANEOUS]:
+                                        pio_write(payload)
+                                elif chan == CHAN_CONFIG:
+                                    switcher_process_command(payload)
 
-        # Read active JR Module inputs
+        # Read active JR Module inputs (safely check if read data is not None before iterating!)
         if active_mode == MODE_JR1_ALL:
             if uart0.any():
                 b_buf = uart0.read()
-                for b in b_buf:
-                    parse_and_forward_jr1_mixed(b)
+                if b_buf:
+                    for b in b_buf:
+                        parse_and_forward_jr1_mixed(b)
 
         elif active_mode == MODE_JR2_CRSF:
             p_data = pio_read()

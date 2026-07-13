@@ -19,7 +19,7 @@ class ConfiguratorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Dual Raspberry Pi Pico Mux & Tracker Configurator")
-        self.root.geometry("680x760")
+        self.root.geometry("680x880") # Increased height slightly to accommodate new switch config
         self.root.resizable(False, False)
 
         self.conn = SerialConnection(on_config_received_cb=self.on_config_received, log_message_cb=self.log)
@@ -69,7 +69,7 @@ class ConfiguratorApp:
 
         # Tab 3: VRX I2C & Remote Channel Settings
         tab_vrx = ttk.Frame(self.notebook)
-        self.notebook.add(tab_vrx, text="VRX (FT System 5.8G)")
+        self.notebook.add(tab_vrx, text="VRX & Switches Config")
         self.setup_vrx_tab(tab_vrx)
 
         # Bottom Console Log Frame
@@ -217,34 +217,63 @@ class ConfiguratorApp:
         self.btn_save_cal.grid(row=10, column=1, columnspan=3, sticky="ew", padx=10, pady=10)
 
     def setup_vrx_tab(self, parent):
-        # Configuration header
-        lbl_vrx_head = ttk.Label(parent, text="Video Receiver (FT System 5.8G) Config", style="Header.TLabel")
-        lbl_vrx_head.grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=10)
+        # 1. Video Control Mode Frame
+        mode_frame = ttk.LabelFrame(parent, text=" VRX Control Method Selection ")
+        mode_frame.grid(row=0, column=0, columnspan=4, sticky="ew", padx=15, pady=5)
 
-        # RC selection channel
-        ttk.Label(parent, text="RC Switch Selection Channel:").grid(row=1, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(mode_frame, text="Active Control Mode:").grid(row=0, column=0, sticky="e", padx=10, pady=5)
+        self.vrx_mode_var = tk.StringVar(value="S2 + 6POS (Simultaneous)")
+        self.combo_vrx_mode = ttk.Combobox(mode_frame, textvariable=self.vrx_mode_var, values=["S2 Only (Video Channel)", "6POS Only (Video Band)", "S2 + 6POS (Simultaneous)", "Custom Positions Table Mapping"], width=30, state="readonly")
+        self.combo_vrx_mode.grid(row=0, column=1, columnspan=2, sticky="w", padx=10, pady=5)
+        self.combo_vrx_mode.bind("<<ComboboxSelected>>", lambda e: self.on_vrx_control_mode_switched())
+
+        # 2. S2 & 6POS Switches Configuration Frame
+        self.sw_frame = ttk.LabelFrame(parent, text=" Switches Pin & Type Configurations ")
+        self.sw_frame.grid(row=1, column=0, columnspan=4, sticky="ew", padx=15, pady=5)
+
+        # S2 switch
+        ttk.Label(self.sw_frame, text="S2 RC Channel:").grid(row=0, column=0, sticky="e", padx=10, pady=5)
+        self.vrx_s2_rc_var = tk.IntVar(value=8)
+        self.ent_s2_rc = ttk.Entry(self.sw_frame, textvariable=self.vrx_s2_rc_var, width=8)
+        self.ent_s2_rc.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+
+        ttk.Label(self.sw_frame, text="S2 Switch Type:").grid(row=0, column=2, sticky="e", padx=10, pady=5)
+        self.vrx_s2_type_var = tk.StringVar(value="8pos (Analog Dial)")
+        self.combo_s2_type = ttk.Combobox(self.sw_frame, textvariable=self.vrx_s2_type_var, values=["2pos", "3pos", "6pos", "8pos (Analog Dial)"], width=15, state="readonly")
+        self.combo_s2_type.grid(row=0, column=3, sticky="w", padx=10, pady=5)
+
+        # 6POS switch
+        ttk.Label(self.sw_frame, text="6POS RC Channel:").grid(row=1, column=0, sticky="e", padx=10, pady=5)
+        self.vrx_6pos_rc_var = tk.IntVar(value=9)
+        self.ent_6pos_rc = ttk.Entry(self.sw_frame, textvariable=self.vrx_6pos_rc_var, width=8)
+        self.ent_6pos_rc.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+
+        ttk.Label(self.sw_frame, text="6POS Switch Type:").grid(row=1, column=2, sticky="e", padx=10, pady=5)
+        self.vrx_6pos_type_var = tk.StringVar(value="6pos")
+        self.combo_6pos_type = ttk.Combobox(self.sw_frame, textvariable=self.vrx_6pos_type_var, values=["2pos", "3pos", "6pos"], width=15, state="readonly")
+        self.combo_6pos_type.grid(row=1, column=3, sticky="w", padx=10, pady=5)
+
+        # Table map channel (only active in mapping table mode)
+        ttk.Label(self.sw_frame, text="Map Select RC Channel:").grid(row=2, column=0, sticky="e", padx=10, pady=5)
         self.vrx_rc_chan_var = tk.IntVar(value=8)
-        self.ent_rc_chan = ttk.Entry(parent, textvariable=self.vrx_rc_chan_var, width=8)
-        self.ent_rc_chan.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        self.ent_rc_chan = ttk.Entry(self.sw_frame, textvariable=self.vrx_rc_chan_var, width=8)
+        self.ent_rc_chan.grid(row=2, column=1, sticky="w", padx=10, pady=5)
 
-        # Switch positions count (2-8)
-        ttk.Label(parent, text="RC Switch Positions (2 to 8):").grid(row=1, column=2, sticky="e", padx=10, pady=5)
+        ttk.Label(self.sw_frame, text="Map Positions (2 to 8):").grid(row=2, column=2, sticky="e", padx=10, pady=5)
         self.vrx_pos_count_var = tk.IntVar(value=3)
-        self.ent_pos_count = ttk.Spinbox(parent, from_=2, to=8, textvariable=self.vrx_pos_count_var, width=8, command=self.update_switch_table_rows)
-        self.ent_pos_count.grid(row=1, column=3, sticky="w", padx=10, pady=5)
+        self.ent_pos_count = ttk.Spinbox(self.sw_frame, from_=2, to=8, textvariable=self.vrx_pos_count_var, width=8, command=self.update_switch_table_rows)
+        self.ent_pos_count.grid(row=2, column=3, sticky="w", padx=10, pady=5)
         self.ent_pos_count.bind("<KeyRelease>", lambda e: self.update_switch_table_rows())
 
-        # Frame to hold dynamic rows
+        # 3. Dynamic Positions Table mapping Frame (Only active in Custom Positions Mode)
         self.table_frame = ttk.LabelFrame(parent, text=" Switch Positions to Video Channel Mapping Table ")
-        self.table_frame.grid(row=2, column=0, columnspan=4, sticky="nsew", padx=20, pady=10)
+        self.table_frame.grid(row=2, column=0, columnspan=4, sticky="nsew", padx=15, pady=5)
 
-        # Table columns headers
         ttk.Label(self.table_frame, text="RC Position", font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, padx=15, pady=2)
         ttk.Label(self.table_frame, text="Target Band", font=('Segoe UI', 9, 'bold')).grid(row=0, column=1, padx=15, pady=2)
         ttk.Label(self.table_frame, text="Target Channel", font=('Segoe UI', 9, 'bold')).grid(row=0, column=2, padx=15, pady=2)
         ttk.Label(self.table_frame, text="Frequencies (MHz)", font=('Segoe UI', 9, 'bold')).grid(row=0, column=3, padx=15, pady=2)
 
-        # Create row widget placeholders
         self.row_widgets = []
         for i in range(8):
             lbl_pos = ttk.Label(self.table_frame, text=f"Position {i+1}")
@@ -261,7 +290,6 @@ class ConfiguratorApp:
             lbl_freq = ttk.Label(self.table_frame, text="5740 MHz")
             lbl_freq.grid(row=i+1, column=3, padx=15, pady=2)
 
-            # Setup dynamic callback when dropdown changes
             combo_band.bind("<<ComboboxSelected>>", lambda e, idx=i: self.on_table_row_changed(idx))
             combo_chan.bind("<<ComboboxSelected>>", lambda e, idx=i: self.on_table_row_changed(idx))
 
@@ -274,25 +302,18 @@ class ConfiguratorApp:
                 'lbl_freq': lbl_freq
             })
 
-        # Set default initial values for 3 positions
-        self.row_widgets[0]['band_var'].set("Band A")
-        self.row_widgets[0]['chan_var'].set(1)
-        self.row_widgets[1]['band_var'].set("Fatshark/F")
-        self.row_widgets[1]['chan_var'].set(1)
-        self.row_widgets[2]['band_var'].set("Raceband")
-        self.row_widgets[2]['chan_var'].set(1)
-
         for idx in range(8):
             self.on_table_row_changed(idx)
 
         self.update_switch_table_rows()
+        self.on_vrx_control_mode_switched()
 
         self.btn_update_vrx = ttk.Button(parent, text="Upload Video Receiver Config", command=self.on_apply_vrx)
-        self.btn_update_vrx.grid(row=3, column=0, columnspan=4, sticky="ew", padx=30, pady=10)
+        self.btn_update_vrx.grid(row=3, column=0, columnspan=4, sticky="ew", padx=30, pady=5)
 
         # 4. Camera Switch & Pot Override
         div = ttk.Separator(parent, orient="horizontal")
-        div.grid(row=4, column=0, columnspan=4, sticky="ew", pady=10)
+        div.grid(row=4, column=0, columnspan=4, sticky="ew", pady=5)
 
         lbl_cam_head = ttk.Label(parent, text="Camera Switcher & Potentiometer Override Settings", style="Header.TLabel")
         lbl_cam_head.grid(row=5, column=0, columnspan=4, sticky="w", padx=20, pady=5)
@@ -312,7 +333,7 @@ class ConfiguratorApp:
         self.chk_pot_override.grid(row=7, column=0, columnspan=4, sticky="w", padx=40, pady=5)
 
         self.btn_update_cam = ttk.Button(parent, text="Apply Camera & Potentiometer Settings", command=self.on_apply_cam)
-        self.btn_update_cam.grid(row=8, column=0, columnspan=4, sticky="ew", padx=30, pady=10)
+        self.btn_update_cam.grid(row=8, column=0, columnspan=4, sticky="ew", padx=30, pady=5)
 
         # 5. Live Tracking Status Feedback
         div2 = ttk.Separator(parent, orient="horizontal")
@@ -325,7 +346,33 @@ class ConfiguratorApp:
         self.lbl_live_el.grid(row=10, column=2, columnspan=2, pady=2)
 
     # ------------------- Tab UI Helpers -------------------
+    def on_vrx_control_mode_switched(self):
+        mode_str = self.vrx_mode_var.get()
+
+        # 1. Enable/Disable S2 switch fields
+        s2_state = "normal" if mode_str in ["S2 Only (Video Channel)", "S2 + 6POS (Simultaneous)"] else "disabled"
+        self.ent_s2_rc.config(state=s2_state)
+        self.combo_s2_type.config(state=s2_state)
+
+        # 2. Enable/Disable 6POS switch fields
+        p6_state = "normal" if mode_str in ["6POS Only (Video Band)", "S2 + 6POS (Simultaneous)"] else "disabled"
+        self.ent_6pos_rc.config(state=p6_state)
+        self.combo_6pos_type.config(state=p6_state)
+
+        # 3. Enable/Disable custom table mapping fields
+        tbl_state = "normal" if mode_str == "Custom Positions Table Mapping" else "disabled"
+        self.ent_rc_chan.config(state=tbl_state)
+        self.ent_pos_count.config(state=tbl_state)
+        self.update_switch_table_rows()
+
     def update_switch_table_rows(self):
+        mode_str = self.vrx_mode_var.get()
+        if mode_str != "Custom Positions Table Mapping":
+            for i in range(8):
+                self.row_widgets[i]['combo_band'].config(state="disabled")
+                self.row_widgets[i]['combo_chan'].config(state="disabled")
+            return
+
         try:
             count = self.vrx_pos_count_var.get()
         except tk.TclError:
@@ -395,11 +442,30 @@ class ConfiguratorApp:
         try:
             rc_chan = int(self.ent_rc_chan.get())
             positions = int(self.ent_pos_count.get())
+
+            s2_rc = int(self.vrx_s2_rc_var.get())
+            p6_rc = int(self.vrx_6pos_rc_var.get())
         except ValueError:
             messagebox.showerror("Error", "Invalid values entered for VRX configuration.")
             return
 
         positions = max(2, min(positions, 8))
+
+        # Get control mode
+        m_str = self.vrx_mode_var.get()
+        mode_map = {"S2 Only (Video Channel)": 1, "6POS Only (Video Band)": 2, "S2 + 6POS (Simultaneous)": 3, "Custom Positions Table Mapping": 4}
+        vrx_control_mode = mode_map.get(m_str, 3)
+
+        # Get S2 switch type
+        s2_t_str = self.vrx_s2_type_var.get()
+        s2_type_map = {"2pos": 2, "3pos": 3, "6pos": 6, "8pos (Analog Dial)": 8}
+        s2_type = s2_type_map.get(s2_t_str, 8)
+
+        # Get 6POS switch type
+        p6_t_str = self.vrx_6pos_type_var.get()
+        p6_type_map = {"2pos": 2, "3pos": 3, "6pos": 6}
+        p6_type = p6_type_map.get(p6_t_str, 6)
+
         band_map = {"Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4, "Lowband/L": 5}
 
         mapped_list = []
@@ -412,10 +478,17 @@ class ConfiguratorApp:
                 chan = 0
             mapped_list.append([band, chan])
 
-        if self.conn.set_vrx_config(rc_chan, positions, mapped_list):
-            self.log(f"Extended VRX table applied: RC Chan={rc_chan}, Active switch positions={positions}")
+        # Extended Command 0x40 formatting:
+        # [0x40, rc_chan, positions_count, vrx_control_mode, s2_rc, s2_type, p6_rc, p6_type, band_0, chan_0, ..., band_7, chan_7]
+        payload = [0x40, rc_chan, positions, vrx_control_mode, s2_rc, s2_type, p6_rc, p6_type]
+        for band, chan in mapped_list:
+            payload.append(band)
+            payload.append(chan)
+
+        if self.conn.send_command(payload):
+            self.log(f"Extended VRX table applied: Mode={m_str}, S2={s2_rc} ({s2_t_str}), 6POS={p6_rc} ({p6_t_str})")
         else:
-            self.log("Failed to apply video receiver mapping configuration.")
+            self.log("Failed to apply video receiver configuration.")
 
     def on_apply_cam(self):
         try:
@@ -479,8 +552,19 @@ class ConfiguratorApp:
         # Update VRX extended settings
         self.ent_rc_chan.delete(0, tk.END)
         self.ent_rc_chan.insert(0, str(config['vrx_rc_chan']))
-
         self.vrx_pos_count_var.set(config['vrx_positions_count'])
+
+        # Update the S2 & 6POS controls
+        mode_map_rev = {1: "S2 Only (Video Channel)", 2: "6POS Only (Video Band)", 3: "S2 + 6POS (Simultaneous)", 4: "Custom Positions Table Mapping"}
+        self.vrx_mode_var.set(mode_map_rev.get(config['vrx_control_mode'], "S2 + 6POS (Simultaneous)"))
+
+        self.vrx_s2_rc_var.set(config['vrx_s2_rc_channel'])
+        s2_type_rev = {2: "2pos", 3: "3pos", 6: "6pos", 8: "8pos (Analog Dial)"}
+        self.vrx_s2_type_var.set(s2_type_rev.get(config['vrx_s2_switch_type'], "8pos (Analog Dial)"))
+
+        self.vrx_6pos_rc_var.set(config['vrx_6pos_rc_channel'])
+        p6_type_rev = {2: "2pos", 3: "3pos", 6: "6pos"}
+        self.vrx_6pos_type_var.set(p6_type_rev.get(config['vrx_6pos_switch_type'], "6pos"))
 
         # Update the 8 mapping rows from the received board config
         band_map_rev = {0: "Band A", 1: "Band B", 2: "Band E", 3: "Fatshark/F", 4: "Raceband", 5: "Lowband/L"}
@@ -491,6 +575,7 @@ class ConfiguratorApp:
             self.on_table_row_changed(i)
 
         self.update_switch_table_rows()
+        self.on_vrx_control_mode_switched()
 
         self.log(f"Stats Update: AZ={config['live_az']}°, EL={config['live_el']}°, Override={config['manual_override']}, Cam={'VRX' if config['active_camera'] == 1 else 'Analog'}, Switch_Pos={config['vrx_positions_count']}")
 ZOOM = 1.0
