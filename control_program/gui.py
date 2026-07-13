@@ -4,17 +4,25 @@ import math
 import tkintermapview
 from serial_conn import SerialConnection
 
-# FT System 5.8G Frequencies Matrix (6 Bands x 8 Channels)
+# FT System 5.8G Frequencies Matrix (11 Bands x 8 Channels = 88 selectable frequencies)
 VRX_FREQ_TABLE = [
     [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725], # Band A
     [5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866], # Band B
     [5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945], # Band E
     [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880], # Band F (Fatshark)
-    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917], # Band R (Raceband)
-    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621]  # Band L (Lowband / Low frequency)
+    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917], # Band Raceband (R)
+    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621], # Band D
+    [4990, 5020, 5050, 5080, 5110, 5140, 5170, 5200], # Band X
+    [5333, 5373, 5413, 5453, 5493, 5533, 5573, 5613], # Band Lowband (L)
+    [4867, 4884, 4921, 4958, 4995, 5032, 5069, 5099], # Band J
+    [5325, 5348, 5366, 5384, 5402, 5420, 5438, 5456], # Band U
+    [5474, 5492, 5510, 5528, 5546, 5564, 5582, 5600]  # Band O
 ]
 
-BANDS_LIST = ["Band A", "Band B", "Band E", "Fatshark/F", "Raceband", "Lowband/L"]
+BANDS_LIST = [
+    "Band A", "Band B", "Band E", "Fatshark/F", "Raceband",
+    "Band D", "Band X", "Lowband/L", "Band J", "Band U", "Band O"
+]
 
 class ScrollableFrame(ttk.Frame):
     def __init__(self, container, *args, **kwargs):
@@ -164,7 +172,7 @@ class ConfiguratorApp:
         return img
 
     def on_freq_cell_clicked(self, band_idx, chan_idx):
-        # 1. Click select the video channel for all modes except S2 + 6POS (Simultaneous)
+        # Handle custom channel selection mapping logic depending on current mode and position toggle settings
         current_mode_str = self.vrx_mode_var.get()
         if current_mode_str == "S2 + 6POS (Simultaneous)":
             self.log("Cannot select frequency manually in S2 + 6POS mode. Use your transmitter S2/6POS toggle switches!")
@@ -174,6 +182,51 @@ class ConfiguratorApp:
                 "In this mode, frequencies are adjusted dynamically by your physical transmitter dials/switches.",
                 parent=self.root
             )
+            return
+
+        if current_mode_str == "Custom Positions Table Mapping" or current_mode_str == "6POS Only (Video Band)":
+            # If 6POS or table mapping mode is selected, we click on the necessary channels in the table to select them,
+            # then click upload/ok. Let's build a selection queue matching the switch positions count.
+            # Number of channels to select depends on how many positions are defined or active.
+            # For 6POS mode, that is exactly 6 positions. For custom positions table, it depends on vrx_positions_count.
+            if current_mode_str == "6POS Only (Video Band)":
+                num_positions = 6
+            else:
+                try:
+                    num_positions = self.vrx_pos_count_var.get()
+                except Exception:
+                    num_positions = 3
+            num_positions = max(2, min(num_positions, 8))
+
+            # Use self.selected_mapping_queue to manage a list of selected (band_idx, chan_idx) tuples
+            if not hasattr(self, 'selected_mapping_queue'):
+                self.selected_mapping_queue = []
+
+            cell = (band_idx, chan_idx)
+            if cell in self.selected_mapping_queue:
+                # Toggle deselect if already clicked!
+                self.selected_mapping_queue.remove(cell)
+                self.log(f"Deselected frequency cell {BANDS_LIST[band_idx]} Ch {chan_idx+1}")
+            else:
+                # Add to queue
+                if len(self.selected_mapping_queue) >= num_positions:
+                    # Remove the oldest to keep size under num_positions
+                    oldest = self.selected_mapping_queue.pop(0)
+                    self.log(f"Deselected oldest cell {BANDS_LIST[oldest[0]]} Ch {oldest[1]+1} to make room")
+                self.selected_mapping_queue.append(cell)
+                self.log(f"Selected frequency cell {BANDS_LIST[band_idx]} Ch {chan_idx+1} (Pos {len(self.selected_mapping_queue)})")
+
+            # Update mapping table fields
+            for i in range(num_positions):
+                if i < len(self.selected_mapping_queue):
+                    b, c = self.selected_mapping_queue[i]
+                    self.row_widgets[i]['band_var'].set(BANDS_LIST[b])
+                    self.row_widgets[i]['chan_var'].set(c + 1)
+                    self.on_table_row_changed(i)
+
+            # Refresh grid cells highlighting
+            self.highlight_active_freq_cell(self.conn.last_config.get('vrx_band', 0) if hasattr(self.conn, 'last_config') else 0,
+                                            self.conn.last_config.get('vrx_chan', 0) if hasattr(self.conn, 'last_config') else 0)
             return
 
         freq_mhz = VRX_FREQ_TABLE[band_idx][chan_idx]
@@ -190,12 +243,24 @@ class ConfiguratorApp:
 
     def highlight_active_freq_cell(self, active_band, active_chan):
         # Scan and update backgrounds of all cells
+        current_mode_str = self.vrx_mode_var.get()
+        has_queue = hasattr(self, 'selected_mapping_queue')
+
         for (b, c), btn in self.freq_buttons.items():
-            if b == active_band and c == active_chan:
-                # Active cell gets high-contrast green highlight background!
-                btn.config(bg="#90EE90", relief="sunken", font=('Segoe UI', 8, 'bold'))
+            if (current_mode_str == "Custom Positions Table Mapping" or current_mode_str == "6POS Only (Video Band)") and has_queue:
+                # Highlight active selected mapping queue channels in order
+                if (b, c) in self.selected_mapping_queue:
+                    idx = self.selected_mapping_queue.index((b, c))
+                    btn.config(bg="#BEE3F8", text=f"P{idx+1}", relief="sunken", font=('Segoe UI', 8, 'bold'))
+                else:
+                    btn.config(bg="#F0F0F0", text=str(VRX_FREQ_TABLE[b][c]), relief="groove", font=('Segoe UI', 8))
             else:
-                btn.config(bg="#F0F0F0", relief="groove", font=('Segoe UI', 8))
+                # Standard mode cell highlighting
+                if b == active_band and c == active_chan:
+                    # Active cell gets high-contrast green highlight background!
+                    btn.config(bg="#90EE90", text=str(VRX_FREQ_TABLE[b][c]), relief="sunken", font=('Segoe UI', 8, 'bold'))
+                else:
+                    btn.config(bg="#F0F0F0", text=str(VRX_FREQ_TABLE[b][c]), relief="groove", font=('Segoe UI', 8))
 
     def log(self, msg):
         self.txt_log.config(state="normal")
@@ -517,8 +582,8 @@ class ConfiguratorApp:
             lbl_ch = ttk.Label(grid_frame, text=f"Ch {col_idx+1}", font=('Segoe UI', 9, 'bold'))
             lbl_ch.grid(row=0, column=col_idx+1, padx=4, pady=2)
 
-        # Draw 6 Bands x 8 Channels
-        for b_idx in range(6):
+        # Draw 11 Bands x 8 Channels
+        for b_idx in range(11):
             lbl_band = ttk.Label(grid_frame, text=BANDS_LIST[b_idx], font=('Segoe UI', 9, 'bold'), width=12, anchor="w")
             lbl_band.grid(row=b_idx+1, column=0, padx=6, pady=2, sticky="w")
 
@@ -620,45 +685,48 @@ class ConfiguratorApp:
         self.on_vrx_control_mode_switched()
 
         self.btn_update_vrx = ttk.Button(parent, text="Upload Video Receiver Config", command=self.on_apply_vrx)
-        self.btn_update_vrx.grid(row=3, column=0, columnspan=4, sticky="ew", padx=30, pady=5)
+        self.btn_update_vrx.grid(row=4, column=0, columnspan=4, sticky="ew", padx=30, pady=10)
 
         # 4. Camera Switch & Pot Override
         div = ttk.Separator(parent, orient="horizontal")
-        div.grid(row=4, column=0, columnspan=4, sticky="ew", pady=5)
+        div.grid(row=5, column=0, columnspan=4, sticky="ew", pady=5)
 
         lbl_cam_head = ttk.Label(parent, text="Camera Switcher & Potentiometer Override Settings", style="Header.TLabel")
-        lbl_cam_head.grid(row=5, column=0, columnspan=4, sticky="w", padx=20, pady=5)
+        lbl_cam_head.grid(row=6, column=0, columnspan=4, sticky="w", padx=20, pady=5)
 
-        ttk.Label(parent, text="Cam Switch RC Channel:").grid(row=6, column=0, sticky="e", padx=10, pady=2)
+        ttk.Label(parent, text="Cam Switch RC Channel:").grid(row=7, column=0, sticky="e", padx=10, pady=2)
         self.cam_rc_chan_var = tk.IntVar(value=7)
         self.ent_cam_rc_chan = ttk.Entry(parent, textvariable=self.cam_rc_chan_var, width=8)
-        self.ent_cam_rc_chan.grid(row=6, column=1, sticky="w", padx=10, pady=2)
+        self.ent_cam_rc_chan.grid(row=7, column=1, sticky="w", padx=10, pady=2)
 
-        ttk.Label(parent, text="Active Video Feed:").grid(row=6, column=2, sticky="e", padx=10, pady=2)
+        ttk.Label(parent, text="Active Video Feed:").grid(row=7, column=2, sticky="e", padx=10, pady=2)
         self.active_cam_var = tk.StringVar(value="VRX Camera")
         self.cam_combo = ttk.Combobox(parent, textvariable=self.active_cam_var, values=["Analog Camera", "VRX Camera"], width=12, state="readonly")
-        self.cam_combo.grid(row=6, column=3, sticky="w", padx=10, pady=2)
+        self.cam_combo.grid(row=7, column=3, sticky="w", padx=10, pady=2)
 
         self.pot_override_var = tk.BooleanVar(value=False)
         self.chk_pot_override = ttk.Checkbutton(parent, text="Manual Potentiometer Servo Control Override", variable=self.pot_override_var)
-        self.chk_pot_override.grid(row=7, column=0, columnspan=4, sticky="w", padx=40, pady=5)
+        self.chk_pot_override.grid(row=8, column=0, columnspan=4, sticky="w", padx=40, pady=5)
 
         self.btn_update_cam = ttk.Button(parent, text="Apply Camera & Potentiometer Settings", command=self.on_apply_cam)
-        self.btn_update_cam.grid(row=8, column=0, columnspan=4, sticky="ew", padx=30, pady=5)
+        self.btn_update_cam.grid(row=9, column=0, columnspan=4, sticky="ew", padx=30, pady=5)
 
         # 5. Live Tracking Status Feedback
         div2 = ttk.Separator(parent, orient="horizontal")
-        div2.grid(row=9, column=0, columnspan=4, sticky="ew", pady=5)
+        div2.grid(row=10, column=0, columnspan=4, sticky="ew", pady=5)
 
         self.lbl_live_az = ttk.Label(parent, text="Live Azimuth: 0° (360° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
-        self.lbl_live_az.grid(row=10, column=0, columnspan=2, pady=2)
+        self.lbl_live_az.grid(row=11, column=0, columnspan=2, pady=2)
 
         self.lbl_live_el = ttk.Label(parent, text="Live Elevation: 0° (180° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
-        self.lbl_live_el.grid(row=10, column=2, columnspan=2, pady=2)
+        self.lbl_live_el.grid(row=11, column=2, columnspan=2, pady=2)
 
     # ------------------- Tab UI Helpers -------------------
     def on_vrx_control_mode_switched(self):
         mode_str = self.vrx_mode_var.get()
+
+        # Clear selected mapping queue when switching modes to avoid unexpected highlight leakage
+        self.selected_mapping_queue = []
 
         # 1. Enable/Disable S2 switch fields
         s2_state = "normal" if mode_str in ["S2 Only (Video Channel)", "S2 + 6POS (Simultaneous)"] else "disabled"
@@ -675,6 +743,10 @@ class ConfiguratorApp:
         self.ent_rc_chan.config(state=tbl_state)
         self.ent_pos_count.config(state=tbl_state)
         self.update_switch_table_rows()
+
+        # Re-highlight grid cells accordingly
+        self.highlight_active_freq_cell(self.conn.last_config.get('vrx_band', 0) if hasattr(self.conn, 'last_config') else 0,
+                                        self.conn.last_config.get('vrx_chan', 0) if hasattr(self.conn, 'last_config') else 0)
 
     def update_switch_table_rows(self):
         mode_str = self.vrx_mode_var.get()
@@ -697,7 +769,10 @@ class ConfiguratorApp:
 
     def on_table_row_changed(self, idx):
         band_str = self.row_widgets[idx]['band_var'].get()
-        band_map = {"Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4, "Lowband/L": 5}
+        band_map = {
+            "Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4,
+            "Band D": 5, "Band X": 6, "Lowband/L": 7, "Band J": 8, "Band U": 9, "Band O": 10
+        }
         band = band_map.get(band_str, 3)
         try:
             chan = int(self.row_widgets[idx]['chan_var'].get()) - 1
@@ -789,7 +864,10 @@ class ConfiguratorApp:
         p6_type_map = {"2pos": 2, "3pos": 3, "6pos": 6}
         p6_type = p6_type_map.get(p6_t_str, 6)
 
-        band_map = {"Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4, "Lowband/L": 5}
+        band_map = {
+            "Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4,
+            "Band D": 5, "Band X": 6, "Lowband/L": 7, "Band J": 8, "Band U": 9, "Band O": 10
+        }
 
         mapped_list = []
         for i in range(8):
@@ -918,7 +996,10 @@ class ConfiguratorApp:
         self.vrx_6pos_type_var.set(p6_type_rev.get(config['vrx_6pos_switch_type'], "6pos"))
 
         # Update the 8 mapping rows from the received board config
-        band_map_rev = {0: "Band A", 1: "Band B", 2: "Band E", 3: "Fatshark/F", 4: "Raceband", 5: "Lowband/L"}
+        band_map_rev = {
+            0: "Band A", 1: "Band B", 2: "Band E", 3: "Fatshark/F", 4: "Raceband",
+            5: "Band D", 6: "Band X", 7: "Lowband/L", 8: "Band J", 9: "Band U", 10: "Band O"
+        }
         for i in range(8):
             b_val, c_val = config['vrx_mapped_channels'][i]
             self.row_widgets[i]['band_var'].set(band_map_rev.get(b_val, "Fatshark/F"))

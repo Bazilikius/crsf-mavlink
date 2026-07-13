@@ -182,15 +182,20 @@ def update_servos(az_us, el_us):
     enc = mux_encode(CHAN_CONFIG, cmd)
     uart1.write(enc)
 
-# FT System 5.8G Frequencies Matrix (6 Bands x 8 Channels = 48 selectable frequencies)
+# FT System 5.8G Frequencies Matrix (11 Bands x 8 Channels = 88 selectable frequencies)
 VRX_I2C_ADDR = 0x35
 VRX_FREQ_TABLE = [
     [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725], # Band A
     [5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866], # Band B
     [5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945], # Band E
-    [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880], # Band F (Fatshark)
-    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917], # Band R (Raceband)
-    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621]  # Band L (Lowband / Low frequency)
+    [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880], # Band F
+    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917], # Band R
+    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621], # Band D
+    [4990, 5020, 5050, 5080, 5110, 5140, 5170, 5200], # Band X
+    [5333, 5373, 5413, 5453, 5493, 5533, 5573, 5613], # Band L
+    [4867, 4884, 4921, 4958, 4995, 5032, 5069, 5099], # Band J
+    [5325, 5348, 5366, 5384, 5402, 5420, 5438, 5456], # Band U
+    [5474, 5492, 5510, 5528, 5546, 5564, 5582, 5600]  # Band O
 ]
 
 def vrx_set_frequency(mhz):
@@ -207,7 +212,7 @@ def vrx_set_frequency(mhz):
         pass
 
 def vrx_set_band_channel(band, channel):
-    band = max(0, min(band, 5)) # 6 Bands: 0 to 5
+    band = max(0, min(band, 10)) # 11 Bands: 0 to 10
     channel = max(0, min(channel, 7))
     config.vrx_band = band
     config.vrx_channel = channel
@@ -330,10 +335,8 @@ def oled_update_display():
     cam_str = "VRX" if config.active_camera == 1 else "ANALOG"
     oled_write_string(0, 4, "CAM: {:<13}".format(cam_str))
 
-    band_char = chr(ord('A') + config.vrx_band)
-    if config.vrx_band == 3: band_char = 'F'
-    elif config.vrx_band == 4: band_char = 'R'
-    elif config.vrx_band == 5: band_char = 'L'
+    band_names = ["A", "B", "E", "F", "R", "D", "X", "L", "J", "U", "O"]
+    band_char = band_names[config.vrx_band] if config.vrx_band < len(band_names) else "?"
     oled_write_string(0, 5, "FRQ: {} (B{} C{})".format(config.vrx_frequency_mhz, band_char, config.vrx_channel + 1))
 
 # --- ADC Potentiometer Processing ---
@@ -596,8 +599,8 @@ def process_pc_command(payload):
                 b, ch = config.vrx_mapped_channels[0]
                 vrx_set_band_channel(b, ch)
     elif cmd == 0x45: # Direct I2C Video Receiver Band/Channel Change Command
-        band = payload[1]
-        channel = payload[2]
+        band = max(0, min(payload[1], 10))
+        channel = max(0, min(payload[2], 7))
         vrx_set_band_channel(band, channel)
         send_config_to_pc()
     elif cmd == 0x50:
