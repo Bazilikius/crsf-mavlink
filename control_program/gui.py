@@ -3,11 +3,23 @@ from tkinter import ttk, messagebox
 import math
 from serial_conn import SerialConnection
 
+# FT System 5.8G Frequencies Matrix (6 Bands x 8 Channels)
+VRX_FREQ_TABLE = [
+    [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725], # Band A
+    [5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866], # Band B
+    [5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945], # Band E
+    [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880], # Band F (Fatshark)
+    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917], # Band R (Raceband)
+    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621]  # Band L (Lowband / Low frequency)
+]
+
+BANDS_LIST = ["Band A", "Band B", "Band E", "Fatshark/F", "Raceband", "Lowband/L"]
+
 class ConfiguratorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Dual YD-RP2040 Mux & Tracker Configurator")
-        self.root.geometry("680x700")
+        self.root.title("Dual Raspberry Pi Pico Mux & Tracker Configurator")
+        self.root.geometry("680x760")
         self.root.resizable(False, False)
 
         self.conn = SerialConnection(on_config_received_cb=self.on_config_received, log_message_cb=self.log)
@@ -17,7 +29,7 @@ class ConfiguratorApp:
         style.theme_use('clam')
         style.configure('TLabel', font=('Segoe UI', 10))
         style.configure('TButton', font=('Segoe UI', 10, 'bold'))
-        style.configure('Header.TLabel', font=('Segoe UI', 12, 'bold'), foreground='#1A365D')
+        style.configure('Header.TLabel', font=('Segoe UI', 11, 'bold'), foreground='#1A365D')
 
         self.create_widgets()
         self.refresh_ports()
@@ -25,25 +37,25 @@ class ConfiguratorApp:
     def create_widgets(self):
         # Top Frame - Connection Bar
         conn_frame = ttk.LabelFrame(self.root, text=" 1. PC Serial Port Connection ")
-        conn_frame.pack(fill="x", padx=15, pady=8)
+        conn_frame.pack(fill="x", padx=15, pady=5)
 
-        ttk.Label(conn_frame, text="COM Port:").pack(side="left", padx=10, pady=10)
+        ttk.Label(conn_frame, text="COM Port:").pack(side="left", padx=10, pady=8)
         self.port_var = tk.StringVar()
         self.port_combo = ttk.Combobox(conn_frame, textvariable=self.port_var, width=15, state="readonly")
-        self.port_combo.pack(side="left", padx=10, pady=10)
+        self.port_combo.pack(side="left", padx=10, pady=8)
 
         self.btn_refresh = ttk.Button(conn_frame, text="Refresh", command=self.refresh_ports)
-        self.btn_refresh.pack(side="left", padx=5, pady=10)
+        self.btn_refresh.pack(side="left", padx=5, pady=8)
 
         self.btn_connect = ttk.Button(conn_frame, text="Connect", command=self.toggle_connection)
-        self.btn_connect.pack(side="left", padx=5, pady=10)
+        self.btn_connect.pack(side="left", padx=5, pady=8)
 
         self.lbl_status = ttk.Label(conn_frame, text="Disconnected", font=('Segoe UI', 10, 'italic'), foreground='red')
-        self.lbl_status.pack(side="right", padx=15, pady=10)
+        self.lbl_status.pack(side="right", padx=15, pady=8)
 
         # Notebook for Tabs
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=15, pady=8)
+        self.notebook.pack(fill="both", expand=True, padx=15, pady=5)
 
         # Tab 1: Module Switcher Mode Configuration
         tab_mode = ttk.Frame(self.notebook)
@@ -57,14 +69,14 @@ class ConfiguratorApp:
 
         # Tab 3: VRX I2C & Remote Channel Settings
         tab_vrx = ttk.Frame(self.notebook)
-        self.notebook.add(tab_vrx, text="VRX & Camera Controller")
+        self.notebook.add(tab_vrx, text="VRX (FT System 5.8G)")
         self.setup_vrx_tab(tab_vrx)
 
         # Bottom Console Log Frame
         log_frame = ttk.LabelFrame(self.root, text=" System Console Log ")
-        log_frame.pack(fill="both", expand=True, padx=15, pady=10)
+        log_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
-        self.txt_log = tk.Text(log_frame, height=6, wrap="word", state="disabled", font=('Courier New', 9))
+        self.txt_log = tk.Text(log_frame, height=5, wrap="word", state="disabled", font=('Courier New', 9))
         self.txt_log.pack(fill="both", expand=True, padx=10, pady=5)
 
     def log(self, msg):
@@ -85,7 +97,7 @@ class ConfiguratorApp:
             self.log(f"Found {len(ports)} serial port(s).")
         else:
             self.port_var.set("")
-            self.log("No active serial ports found. Connect YD-RP2040 and click Refresh.")
+            self.log("No active serial ports found. Connect Pico and click Refresh.")
 
     def toggle_connection(self):
         if self.btn_connect['text'] == "Connect":
@@ -131,145 +143,211 @@ class ConfiguratorApp:
         lbl_desc.pack(anchor="w", padx=20, pady=25)
 
     def setup_tracker_tab(self, parent):
-        # 1. Home coordinates setting
         lbl_home_head = ttk.Label(parent, text="Antenna Tracker Home Coordinates", style="Header.TLabel")
-        lbl_home_head.grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=10)
+        lbl_home_head.grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=5)
 
-        ttk.Label(parent, text="Latitude (°):").grid(row=1, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(parent, text="Latitude (°):").grid(row=1, column=0, sticky="e", padx=10, pady=2)
         self.ent_home_lat = ttk.Entry(parent, width=12)
-        self.ent_home_lat.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        self.ent_home_lat.grid(row=1, column=1, sticky="w", padx=10, pady=2)
         self.ent_home_lat.insert(0, "0.0")
 
-        ttk.Label(parent, text="Longitude (°):").grid(row=1, column=2, sticky="e", padx=10, pady=5)
+        ttk.Label(parent, text="Longitude (°):").grid(row=1, column=2, sticky="e", padx=10, pady=2)
         self.ent_home_lon = ttk.Entry(parent, width=12)
-        self.ent_home_lon.grid(row=1, column=3, sticky="w", padx=10, pady=5)
+        self.ent_home_lon.grid(row=1, column=3, sticky="w", padx=10, pady=2)
         self.ent_home_lon.insert(0, "0.0")
 
-        ttk.Label(parent, text="Altitude (m):").grid(row=2, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(parent, text="Altitude (m):").grid(row=2, column=0, sticky="e", padx=10, pady=2)
         self.ent_home_alt = ttk.Entry(parent, width=12)
-        self.ent_home_alt.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        self.ent_home_alt.grid(row=2, column=1, sticky="w", padx=10, pady=2)
         self.ent_home_alt.insert(0, "0.0")
 
         self.btn_set_home = ttk.Button(parent, text="Set Home Position", command=self.on_set_home)
-        self.btn_set_home.grid(row=2, column=2, columnspan=2, sticky="ew", padx=10, pady=5)
+        self.btn_set_home.grid(row=2, column=2, columnspan=2, sticky="ew", padx=10, pady=2)
 
         # Divider
         div = ttk.Separator(parent, orient="horizontal")
-        div.grid(row=3, column=0, columnspan=4, sticky="ew", pady=15)
+        div.grid(row=3, column=0, columnspan=4, sticky="ew", pady=10)
 
-        # 2. Servo Limits & Calibration
+        # Servo Limits & Calibration
         lbl_servo_head = ttk.Label(parent, text="Servo Calibration & Range Limits (us)", style="Header.TLabel")
-        lbl_servo_head.grid(row=4, column=0, columnspan=4, sticky="w", padx=20, pady=10)
+        lbl_servo_head.grid(row=4, column=0, columnspan=4, sticky="w", padx=20, pady=5)
 
-        ttk.Label(parent, text="Servo Channel", font=('Segoe UI', 10, 'bold')).grid(row=5, column=0, padx=10, pady=5)
-        ttk.Label(parent, text="Minimum (us)", font=('Segoe UI', 10, 'bold')).grid(row=5, column=1, padx=10, pady=5)
-        ttk.Label(parent, text="Maximum (us)", font=('Segoe UI', 10, 'bold')).grid(row=5, column=2, padx=10, pady=5)
-        ttk.Label(parent, text="Trim/Mid (us)", font=('Segoe UI', 10, 'bold')).grid(row=5, column=3, padx=10, pady=5)
+        ttk.Label(parent, text="Servo Channel", font=('Segoe UI', 10, 'bold')).grid(row=5, column=0, padx=10, pady=2)
+        ttk.Label(parent, text="Minimum (us)", font=('Segoe UI', 10, 'bold')).grid(row=5, column=1, padx=10, pady=2)
+        ttk.Label(parent, text="Maximum (us)", font=('Segoe UI', 10, 'bold')).grid(row=5, column=2, padx=10, pady=2)
+        ttk.Label(parent, text="Trim/Mid (us)", font=('Segoe UI', 10, 'bold')).grid(row=5, column=3, padx=10, pady=2)
 
         # Azimuth
-        ttk.Label(parent, text="Azimuth (Pan):").grid(row=6, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(parent, text="Azimuth (Pan):").grid(row=6, column=0, sticky="e", padx=10, pady=2)
         self.ent_az_min = ttk.Entry(parent, width=10)
-        self.ent_az_min.grid(row=6, column=1, padx=10, pady=5)
+        self.ent_az_min.grid(row=6, column=1, padx=10, pady=2)
         self.ent_az_min.insert(0, "1000")
 
         self.ent_az_max = ttk.Entry(parent, width=10)
-        self.ent_az_max.grid(row=6, column=2, padx=10, pady=5)
+        self.ent_az_max.grid(row=6, column=2, padx=10, pady=2)
         self.ent_az_max.insert(0, "2000")
 
         self.ent_az_trim = ttk.Entry(parent, width=10)
-        self.ent_az_trim.grid(row=6, column=3, padx=10, pady=5)
+        self.ent_az_trim.grid(row=6, column=3, padx=10, pady=2)
         self.ent_az_trim.insert(0, "1500")
 
         self.az_rev_var = tk.BooleanVar()
         self.chk_az_rev = ttk.Checkbutton(parent, text="Reverse direction", variable=self.az_rev_var)
-        self.chk_az_rev.grid(row=7, column=1, columnspan=2, sticky="w", padx=10, pady=5)
+        self.chk_az_rev.grid(row=7, column=1, columnspan=2, sticky="w", padx=10, pady=2)
 
         # Elevation
-        ttk.Label(parent, text="Elevation (Tilt):").grid(row=8, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(parent, text="Elevation (Tilt):").grid(row=8, column=0, sticky="e", padx=10, pady=2)
         self.ent_el_min = ttk.Entry(parent, width=10)
-        self.ent_el_min.grid(row=8, column=1, padx=10, pady=5)
+        self.ent_el_min.grid(row=8, column=1, padx=10, pady=2)
         self.ent_el_min.insert(0, "1000")
 
         self.ent_el_max = ttk.Entry(parent, width=10)
-        self.ent_el_max.grid(row=8, column=2, padx=10, pady=5)
+        self.ent_el_max.grid(row=8, column=2, padx=10, pady=2)
         self.ent_el_max.insert(0, "2000")
 
         self.ent_el_trim = ttk.Entry(parent, width=10)
-        self.ent_el_trim.grid(row=8, column=3, padx=10, pady=5)
+        self.ent_el_trim.grid(row=8, column=3, padx=10, pady=2)
         self.ent_el_trim.insert(0, "1500")
 
         self.el_rev_var = tk.BooleanVar()
         self.chk_el_rev = ttk.Checkbutton(parent, text="Reverse direction", variable=self.el_rev_var)
-        self.chk_el_rev.grid(row=9, column=1, columnspan=2, sticky="w", padx=10, pady=5)
+        self.chk_el_rev.grid(row=9, column=1, columnspan=2, sticky="w", padx=10, pady=2)
 
         self.btn_save_cal = ttk.Button(parent, text="Upload Calibration", command=self.on_save_calibration)
-        self.btn_save_cal.grid(row=10, column=1, columnspan=3, sticky="ew", padx=10, pady=15)
+        self.btn_save_cal.grid(row=10, column=1, columnspan=3, sticky="ew", padx=10, pady=10)
 
     def setup_vrx_tab(self, parent):
-        parent.columnconfigure(0, weight=1)
-        parent.columnconfigure(1, weight=1)
+        # Configuration header
+        lbl_vrx_head = ttk.Label(parent, text="Video Receiver (FT System 5.8G) Config", style="Header.TLabel")
+        lbl_vrx_head.grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=10)
 
-        # 1. VRX frequency
-        lbl_vrx_head = ttk.Label(parent, text="Video Receiver (VRX) Setup", style="Header.TLabel")
-        lbl_vrx_head.grid(row=0, column=0, columnspan=2, sticky="w", padx=20, pady=10)
-
-        ttk.Label(parent, text="Remote Control Switch Channel:").grid(row=1, column=0, sticky="e", padx=10, pady=5)
+        # RC selection channel
+        ttk.Label(parent, text="RC Switch Selection Channel:").grid(row=1, column=0, sticky="e", padx=10, pady=5)
         self.vrx_rc_chan_var = tk.IntVar(value=8)
-        self.ent_rc_chan = ttk.Entry(parent, textvariable=self.vrx_rc_chan_var, width=10)
+        self.ent_rc_chan = ttk.Entry(parent, textvariable=self.vrx_rc_chan_var, width=8)
         self.ent_rc_chan.grid(row=1, column=1, sticky="w", padx=10, pady=5)
 
-        ttk.Label(parent, text="VRX Selectable Band:").grid(row=2, column=0, sticky="e", padx=10, pady=5)
-        self.band_var = tk.StringVar(value="Fatshark/F")
-        self.band_combo = ttk.Combobox(parent, textvariable=self.band_var, values=["Band A", "Band B", "Band E", "Fatshark/F", "Raceband"], width=15, state="readonly")
-        self.band_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        # Switch positions count (2-8)
+        ttk.Label(parent, text="RC Switch Positions (2 to 8):").grid(row=1, column=2, sticky="e", padx=10, pady=5)
+        self.vrx_pos_count_var = tk.IntVar(value=3)
+        self.ent_pos_count = ttk.Spinbox(parent, from_=2, to=8, textvariable=self.vrx_pos_count_var, width=8, command=self.update_switch_table_rows)
+        self.ent_pos_count.grid(row=1, column=3, sticky="w", padx=10, pady=5)
+        self.ent_pos_count.bind("<KeyRelease>", lambda e: self.update_switch_table_rows())
 
-        ttk.Label(parent, text="VRX Selectable Channel:").grid(row=3, column=0, sticky="e", padx=10, pady=5)
-        self.chan_var = tk.IntVar(value=1)
-        self.chan_combo = ttk.Combobox(parent, textvariable=self.chan_var, values=[1, 2, 3, 4, 5, 6, 7, 8], width=15, state="readonly")
-        self.chan_combo.grid(row=3, column=1, sticky="w", padx=10, pady=5)
+        # Frame to hold dynamic rows
+        self.table_frame = ttk.LabelFrame(parent, text=" Switch Positions to Video Channel Mapping Table ")
+        self.table_frame.grid(row=2, column=0, columnspan=4, sticky="nsew", padx=20, pady=10)
 
-        ttk.Label(parent, text="Direct Frequency (MHz):").grid(row=4, column=0, sticky="e", padx=10, pady=5)
-        self.ent_freq = ttk.Entry(parent, width=10)
-        self.ent_freq.grid(row=4, column=1, sticky="w", padx=10, pady=5)
-        self.ent_freq.insert(0, "5740")
+        # Table columns headers
+        ttk.Label(self.table_frame, text="RC Position", font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, padx=15, pady=2)
+        ttk.Label(self.table_frame, text="Target Band", font=('Segoe UI', 9, 'bold')).grid(row=0, column=1, padx=15, pady=2)
+        ttk.Label(self.table_frame, text="Target Channel", font=('Segoe UI', 9, 'bold')).grid(row=0, column=2, padx=15, pady=2)
+        ttk.Label(self.table_frame, text="Frequencies (MHz)", font=('Segoe UI', 9, 'bold')).grid(row=0, column=3, padx=15, pady=2)
 
-        self.btn_update_vrx = ttk.Button(parent, text="Apply VRX Settings", command=self.on_apply_vrx)
-        self.btn_update_vrx.grid(row=5, column=0, columnspan=2, sticky="ew", padx=30, pady=10)
+        # Create row widget placeholders
+        self.row_widgets = []
+        for i in range(8):
+            lbl_pos = ttk.Label(self.table_frame, text=f"Position {i+1}")
+            lbl_pos.grid(row=i+1, column=0, padx=15, pady=2)
 
-        # Divider
+            band_var = tk.StringVar(value="Fatshark/F")
+            combo_band = ttk.Combobox(self.table_frame, textvariable=band_var, values=BANDS_LIST, width=12, state="readonly")
+            combo_band.grid(row=i+1, column=1, padx=15, pady=2)
+
+            chan_var = tk.IntVar(value=1)
+            combo_chan = ttk.Combobox(self.table_frame, textvariable=chan_var, values=[1, 2, 3, 4, 5, 6, 7, 8], width=8, state="readonly")
+            combo_chan.grid(row=i+1, column=2, padx=15, pady=2)
+
+            lbl_freq = ttk.Label(self.table_frame, text="5740 MHz")
+            lbl_freq.grid(row=i+1, column=3, padx=15, pady=2)
+
+            # Setup dynamic callback when dropdown changes
+            combo_band.bind("<<ComboboxSelected>>", lambda e, idx=i: self.on_table_row_changed(idx))
+            combo_chan.bind("<<ComboboxSelected>>", lambda e, idx=i: self.on_table_row_changed(idx))
+
+            self.row_widgets.append({
+                'label_pos': lbl_pos,
+                'band_var': band_var,
+                'combo_band': combo_band,
+                'chan_var': chan_var,
+                'combo_chan': combo_chan,
+                'lbl_freq': lbl_freq
+            })
+
+        # Set default initial values for 3 positions
+        self.row_widgets[0]['band_var'].set("Band A")
+        self.row_widgets[0]['chan_var'].set(1)
+        self.row_widgets[1]['band_var'].set("Fatshark/F")
+        self.row_widgets[1]['chan_var'].set(1)
+        self.row_widgets[2]['band_var'].set("Raceband")
+        self.row_widgets[2]['chan_var'].set(1)
+
+        for idx in range(8):
+            self.on_table_row_changed(idx)
+
+        self.update_switch_table_rows()
+
+        self.btn_update_vrx = ttk.Button(parent, text="Upload Video Receiver Config", command=self.on_apply_vrx)
+        self.btn_update_vrx.grid(row=3, column=0, columnspan=4, sticky="ew", padx=30, pady=10)
+
+        # 4. Camera Switch & Pot Override
         div = ttk.Separator(parent, orient="horizontal")
-        div.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
+        div.grid(row=4, column=0, columnspan=4, sticky="ew", pady=10)
 
-        # 2. Camera Switch & Manual Pot Override Settings
-        lbl_cam_head = ttk.Label(parent, text="Camera Switch & Manual Potentiometer Override", style="Header.TLabel")
-        lbl_cam_head.grid(row=7, column=0, columnspan=2, sticky="w", padx=20, pady=10)
+        lbl_cam_head = ttk.Label(parent, text="Camera Switcher & Potentiometer Override Settings", style="Header.TLabel")
+        lbl_cam_head.grid(row=5, column=0, columnspan=4, sticky="w", padx=20, pady=5)
 
-        ttk.Label(parent, text="Cam Switch RC Channel:").grid(row=8, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(parent, text="Cam Switch RC Channel:").grid(row=6, column=0, sticky="e", padx=10, pady=2)
         self.cam_rc_chan_var = tk.IntVar(value=7)
-        self.ent_cam_rc_chan = ttk.Entry(parent, textvariable=self.cam_rc_chan_var, width=10)
-        self.ent_cam_rc_chan.grid(row=8, column=1, sticky="w", padx=10, pady=5)
+        self.ent_cam_rc_chan = ttk.Entry(parent, textvariable=self.cam_rc_chan_var, width=8)
+        self.ent_cam_rc_chan.grid(row=6, column=1, sticky="w", padx=10, pady=2)
 
-        ttk.Label(parent, text="Active Video Feed:").grid(row=9, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(parent, text="Active Video Feed:").grid(row=6, column=2, sticky="e", padx=10, pady=2)
         self.active_cam_var = tk.StringVar(value="VRX Camera")
-        self.cam_combo = ttk.Combobox(parent, textvariable=self.active_cam_var, values=["Analog Camera", "VRX Camera"], width=15, state="readonly")
-        self.cam_combo.grid(row=9, column=1, sticky="w", padx=10, pady=5)
+        self.cam_combo = ttk.Combobox(parent, textvariable=self.active_cam_var, values=["Analog Camera", "VRX Camera"], width=12, state="readonly")
+        self.cam_combo.grid(row=6, column=3, sticky="w", padx=10, pady=2)
 
-        self.pot_override_var = tk.BooleanVar()
+        self.pot_override_var = tk.BooleanVar(value=False)
         self.chk_pot_override = ttk.Checkbutton(parent, text="Manual Potentiometer Servo Control Override", variable=self.pot_override_var)
-        self.chk_pot_override.grid(row=10, column=0, columnspan=2, sticky="w", padx=40, pady=8)
+        self.chk_pot_override.grid(row=7, column=0, columnspan=4, sticky="w", padx=40, pady=5)
 
-        self.btn_update_cam = ttk.Button(parent, text="Apply Cam & Pot Settings", command=self.on_apply_cam)
-        self.btn_update_cam.grid(row=11, column=0, columnspan=2, sticky="ew", padx=30, pady=10)
+        self.btn_update_cam = ttk.Button(parent, text="Apply Camera & Potentiometer Settings", command=self.on_apply_cam)
+        self.btn_update_cam.grid(row=8, column=0, columnspan=4, sticky="ew", padx=30, pady=10)
 
-        # 3. Live Feedback / Displays
+        # 5. Live Tracking Status Feedback
         div2 = ttk.Separator(parent, orient="horizontal")
-        div2.grid(row=12, column=0, columnspan=2, sticky="ew", pady=10)
+        div2.grid(row=9, column=0, columnspan=4, sticky="ew", pady=5)
 
-        self.lbl_live_az = ttk.Label(parent, text="Live Azimuth: 0° (360° Limit)", font=('Segoe UI', 11, 'bold'), foreground='#1A365D')
-        self.lbl_live_az.grid(row=13, column=0, columnspan=2, pady=5)
+        self.lbl_live_az = ttk.Label(parent, text="Live Azimuth: 0° (360° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
+        self.lbl_live_az.grid(row=10, column=0, columnspan=2, pady=2)
 
-        self.lbl_live_el = ttk.Label(parent, text="Live Elevation: 0° (180° Limit)", font=('Segoe UI', 11, 'bold'), foreground='#1A365D')
-        self.lbl_live_el.grid(row=14, column=0, columnspan=2, pady=5)
+        self.lbl_live_el = ttk.Label(parent, text="Live Elevation: 0° (180° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
+        self.lbl_live_el.grid(row=10, column=2, columnspan=2, pady=2)
+
+    # ------------------- Tab UI Helpers -------------------
+    def update_switch_table_rows(self):
+        try:
+            count = self.vrx_pos_count_var.get()
+        except tk.TclError:
+            count = 3
+        count = max(2, min(count, 8))
+
+        for i in range(8):
+            state = "normal" if i < count else "disabled"
+            self.row_widgets[i]['combo_band'].config(state=state)
+            self.row_widgets[i]['combo_chan'].config(state=state)
+
+    def on_table_row_changed(self, idx):
+        band_str = self.row_widgets[idx]['band_var'].get()
+        band_map = {"Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4, "Lowband/L": 5}
+        band = band_map.get(band_str, 3)
+        try:
+            chan = int(self.row_widgets[idx]['chan_var'].get()) - 1
+        except ValueError:
+            chan = 0
+
+        freq = VRX_FREQ_TABLE[band][chan]
+        self.row_widgets[idx]['lbl_freq'].config(text=f"{freq} MHz")
 
     # ------------------- Action Callbacks -------------------
     def on_mode_changed(self):
@@ -316,20 +394,28 @@ class ConfiguratorApp:
     def on_apply_vrx(self):
         try:
             rc_chan = int(self.ent_rc_chan.get())
-            freq = int(self.ent_freq.get())
+            positions = int(self.ent_pos_count.get())
         except ValueError:
             messagebox.showerror("Error", "Invalid values entered for VRX configuration.")
             return
 
-        band_str = self.band_var.get()
-        band_map = {"Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4}
-        band = band_map.get(band_str, 3)
-        chan = int(self.chan_combo.get()) - 1
+        positions = max(2, min(positions, 8))
+        band_map = {"Band A": 0, "Band B": 1, "Band E": 2, "Fatshark/F": 3, "Raceband": 4, "Lowband/L": 5}
 
-        if self.conn.set_vrx_config(rc_chan, band, chan, freq):
-            self.log(f"Applied VRX config: RC Chan={rc_chan}, Band={band_str}, Chan={chan+1}, Freq={freq}MHz")
+        mapped_list = []
+        for i in range(8):
+            b_str = self.row_widgets[i]['band_var'].get()
+            band = band_map.get(b_str, 3)
+            try:
+                chan = int(self.row_widgets[i]['chan_var'].get()) - 1
+            except ValueError:
+                chan = 0
+            mapped_list.append([band, chan])
+
+        if self.conn.set_vrx_config(rc_chan, positions, mapped_list):
+            self.log(f"Extended VRX table applied: RC Chan={rc_chan}, Active switch positions={positions}")
         else:
-            self.log("Failed to apply VRX configuration.")
+            self.log("Failed to apply video receiver mapping configuration.")
 
     def on_apply_cam(self):
         try:
@@ -349,7 +435,6 @@ class ConfiguratorApp:
 
     # ------------------- Config Received Event -------------------
     def on_config_received(self, config):
-        # Schedule the UI updates safely on the main GUI thread!
         self.root.after(0, self._on_config_received_main_thread, config)
 
     def _on_config_received_main_thread(self, config):
@@ -382,17 +467,6 @@ class ConfiguratorApp:
             self.ent_home_alt.delete(0, tk.END)
             self.ent_home_alt.insert(0, f"{config['home_alt']:.1f}")
 
-        # Update VRX settings
-        self.ent_rc_chan.delete(0, tk.END)
-        self.ent_rc_chan.insert(0, str(config['vrx_rc_chan']))
-
-        band_map_rev = {0: "Band A", 1: "Band B", 2: "Band E", 3: "Fatshark/F", 4: "Raceband"}
-        self.band_var.set(band_map_rev.get(config['vrx_band'], "Fatshark/F"))
-        self.chan_var.set(config['vrx_chan'] + 1)
-
-        self.ent_freq.delete(0, tk.END)
-        self.ent_freq.insert(0, str(config['vrx_mhz']))
-
         # Update Cam Switch & Pot Overrides
         self.cam_rc_chan_var.set(config['cam_rc_chan'])
         self.active_cam_var.set("VRX Camera" if config['active_camera'] == 1 else "Analog Camera")
@@ -402,5 +476,21 @@ class ConfiguratorApp:
         self.lbl_live_az.config(text=f"Live Azimuth: {config['live_az']}° (360° Limit)")
         self.lbl_live_el.config(text=f"Live Elevation: {config['live_el']}° (180° Limit)")
 
-        self.log(f"Stats Update: AZ={config['live_az']}°, EL={config['live_el']}°, Override={config['manual_override']}, Cam={'VRX' if config['active_camera'] == 1 else 'Analog'}")
+        # Update VRX extended settings
+        self.ent_rc_chan.delete(0, tk.END)
+        self.ent_rc_chan.insert(0, str(config['vrx_rc_chan']))
+
+        self.vrx_pos_count_var.set(config['vrx_positions_count'])
+
+        # Update the 8 mapping rows from the received board config
+        band_map_rev = {0: "Band A", 1: "Band B", 2: "Band E", 3: "Fatshark/F", 4: "Raceband", 5: "Lowband/L"}
+        for i in range(8):
+            b_val, c_val = config['vrx_mapped_channels'][i]
+            self.row_widgets[i]['band_var'].set(band_map_rev.get(b_val, "Fatshark/F"))
+            self.row_widgets[i]['chan_var'].set(c_val + 1)
+            self.on_table_row_changed(i)
+
+        self.update_switch_table_rows()
+
+        self.log(f"Stats Update: AZ={config['live_az']}°, EL={config['live_el']}°, Override={config['manual_override']}, Cam={'VRX' if config['active_camera'] == 1 else 'Analog'}, Switch_Pos={config['vrx_positions_count']}")
 ZOOM = 1.0

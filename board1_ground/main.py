@@ -3,7 +3,7 @@ import machine
 import sys
 import math
 import struct
-import uselect
+import uselect as select
 import time
 import micropython
 
@@ -139,22 +139,28 @@ class SystemConfig:
         self.live_azimuth_deg = 0
         self.live_elevation_deg = 0
 
+        # New customizable toggle switch positions mapping for video receiver (FT System 5.8G)
+        self.vrx_positions_count = 3 # Default to a 3-position toggle switch
+        self.vrx_mapped_channels = [
+            [0, 0], # Pos 1 (0): Band A, Channel 1 (5865 MHz)
+            [3, 0], # Pos 2 (1): Band F, Channel 1 (5740 MHz)
+            [4, 0], # Pos 3 (2): Band R, Channel 1 (5658 MHz)
+            [0, 0], # Pos 4 (3): Default A1
+            [0, 0], # Pos 5 (4): Default A1
+            [0, 0], # Pos 6 (5): Default A1
+            [0, 0], # Pos 7 (6): Default A1
+            [0, 0]  # Pos 8 (7): Default A1
+        ]
+
 config = SystemConfig()
 mux_parser = MuxParser()
 pc_mux_parser = MuxParser()
 
 # --- Hardware Initializations ---
-# 1. UART1 for inter-board communication (increased rxbuf to 4096 bytes to completely prevent any screen-write bottlenecks!)
 uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
-
-# 2. I2C0 for SSD1306 and VRX (Fast mode 400kHz to complete writes 4x faster!)
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
-
-# 3. ADCs for potentiometers
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
 adc_pot_el = machine.ADC(machine.Pin(PIN_ADC_POT_EL))
-
-# 4. Camera Switch
 cam_switch_pin = machine.Pin(PIN_CAM_SWITCH, machine.Pin.OUT)
 
 # --- Helper Functions ---
@@ -166,14 +172,15 @@ def update_servos(az_us, el_us):
     enc = mux_encode(CHAN_CONFIG, cmd)
     uart1.write(enc)
 
-# VRX Synthesizer programming (RTC6715 / RX5808 via I2C)
+# FT System 5.8G Frequencies Matrix (6 Bands x 8 Channels = 48 selectable frequencies)
 VRX_I2C_ADDR = 0x35
 VRX_FREQ_TABLE = [
     [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725], # Band A
     [5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866], # Band B
     [5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945], # Band E
-    [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880], # Band F
-    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917]  # Raceband
+    [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880], # Band F (Fatshark)
+    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917], # Band R (Raceband)
+    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621]  # Band L (Lowband / Low frequency)
 ]
 
 def vrx_set_frequency(mhz):
@@ -190,7 +197,7 @@ def vrx_set_frequency(mhz):
         pass
 
 def vrx_set_band_channel(band, channel):
-    band = max(0, min(band, 4))
+    band = max(0, min(band, 5)) # 6 Bands: 0 to 5
     channel = max(0, min(channel, 7))
     config.vrx_band = band
     config.vrx_channel = channel
@@ -316,6 +323,7 @@ def oled_update_display():
     band_char = chr(ord('A') + config.vrx_band)
     if config.vrx_band == 3: band_char = 'F'
     elif config.vrx_band == 4: band_char = 'R'
+    elif config.vrx_band == 5: band_char = 'L'
     oled_write_string(0, 5, "FRQ: {} (B{} C{})".format(config.vrx_frequency_mhz, band_char, config.vrx_channel + 1))
 
 # --- ADC Potentiometer Processing ---
@@ -480,6 +488,7 @@ mav_parser = MavlinkParser()
 
 # --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
+    # Build the 57-byte payload
     payload = bytearray([
         config.system_mode,
         (config.azimuth_min_us >> 8) & 0xFF, config.azimuth_min_us & 0xFF,
@@ -510,6 +519,12 @@ def send_config_to_pc():
     payload.append((config.live_elevation_deg >> 8) & 0xFF)
     payload.append(config.live_elevation_deg & 0xFF)
 
+    # Pack the position switch table mapping (Positions count, followed by 8 custom band/channel pairs)
+    payload.append(config.vrx_positions_count)
+    for i in range(8):
+        payload.append(config.vrx_mapped_channels[i][0])
+        payload.append(config.vrx_mapped_channels[i][1])
+
     packet = mux_encode(CHAN_CONFIG, payload)
     write_stdout_bytes(packet)
 
@@ -535,12 +550,21 @@ def process_pc_command(payload):
         config.home_lon = struct.unpack('<f', bytes(payload[5:9]))[0]
         config.home_alt = struct.unpack('<f', bytes(payload[9:13]))[0]
         config.home_set = True
-    elif cmd == 0x40:
-        config.vrx_rc_channel = payload[1]
-        config.vrx_band = payload[2]
-        config.vrx_channel = payload[3]
-        mhz = (payload[4] << 8) | payload[5]
-        vrx_set_frequency(mhz)
+    elif cmd == 0x40: # Extended VRX Table configuration command
+        if len(payload) >= 19:
+            config.vrx_rc_channel = payload[1]
+            config.vrx_positions_count = payload[2]
+
+            # Unpack 8 mappings
+            idx = 3
+            for i in range(8):
+                config.vrx_mapped_channels[i][0] = payload[idx]
+                config.vrx_mapped_channels[i][1] = payload[idx+1]
+                idx += 2
+
+            # Set to initial mapped channel on update
+            b, ch = config.vrx_mapped_channels[0]
+            vrx_set_band_channel(b, ch)
     elif cmd == 0x50:
         send_config_to_pc()
     elif cmd == 0x60:
@@ -597,14 +621,20 @@ def process_crsf_byte(b):
             channels[14] = (crsf_payload[19] >> 2 | crsf_payload[20] << 6) & 0x07FF
             channels[15] = (crsf_payload[20] >> 5 | crsf_payload[21] << 3) & 0x07FF
 
+            # Process Multi-Position Switch Selectable Channel Switching!
             vrx_ch = channels[config.vrx_rc_channel - 1]
             if 172 <= vrx_ch <= 1811:
-                selected = int(((vrx_ch - 172) * 8) / 1640)
-                selected = max(0, min(selected, 7))
-                if selected != config.vrx_channel:
-                    vrx_set_band_channel(config.vrx_band, selected)
+                # Map standard CRSF 172..1811 range cleanly into positions (0 to count - 1)
+                pos = int(((vrx_ch - 172) * config.vrx_positions_count) / 1640)
+                pos = max(0, min(pos, config.vrx_positions_count - 1))
+
+                # Fetch target band and channel for current position
+                target_band, target_chan = config.vrx_mapped_channels[pos]
+                if target_band != config.vrx_band or target_chan != config.vrx_channel:
+                    vrx_set_band_channel(target_band, target_chan)
                     send_config_to_pc()
 
+            # Cam Switch toggling
             cam_ch = channels[config.cam_rc_channel - 1]
             if 172 <= cam_ch <= 1811:
                 target_cam = 1 if cam_ch > 992 else 0
@@ -621,7 +651,10 @@ def main():
     last_pot_update_ms = 0
     last_oled_update_ms = 0
 
-    # Non-blocking USB VCP polling of standard input using standard select.select()
+    poll = select.poll()
+    poll.register(sys.stdin, select.POLLIN)
+    poll.register(uart1, select.POLLIN)
+
     while True:
         now = time.ticks_ms()
 
@@ -636,7 +669,7 @@ def main():
             oled_update_display()
 
         # 3. Read incoming bytes from USB stdin (VCP) non-blocking using select.select()
-        r, _, _ = uselect.select([sys.stdin], [], [], 0)
+        r, _, _ = select.select([sys.stdin], [], [], 0)
         if r:
             b = read_stdin_byte()
             if b is not None:

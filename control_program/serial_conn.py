@@ -150,7 +150,6 @@ class SerialConnection:
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
             try:
-                # All configuration commands are packaged inside CHAN_CONFIG multiplexer frames!
                 framed = mux_encode(CHAN_CONFIG, payload)
                 self.ser.write(framed)
                 self.ser.flush()
@@ -186,15 +185,14 @@ class SerialConnection:
         self.log(f"Sending Set Home Command: Lat={lat}, Lon={lon}, Alt={alt}")
         return self.send_command(payload)
 
-    def set_vrx_config(self, rc_chan, band, chan, mhz):
-        payload = [
-            0x40,
-            rc_chan,
-            band,
-            chan,
-            (mhz >> 8) & 0xFF, mhz & 0xFF
-        ]
-        self.log(f"Sending VRX Config Command: RC_Chan={rc_chan}, Band={band}, Chan={chan}, MHz={mhz}")
+    def set_vrx_config(self, rc_chan, positions_count, mapped_list):
+        # mapped_list: list of 8 [band, channel] pairs
+        payload = [0x40, rc_chan, positions_count]
+        for band, chan in mapped_list:
+            payload.append(band)
+            payload.append(chan)
+
+        self.log(f"Sending Extended VRX Table Config: RC_Chan={rc_chan}, Positions={positions_count}")
         return self.send_command(payload)
 
     def request_config_read(self):
@@ -218,14 +216,12 @@ class SerialConnection:
                     if self.ser.in_waiting > 0:
                         data = self.ser.read(self.ser.in_waiting)
 
-                        # Process through standard MuxParser to prevent any stream collision or corruption!
                         for b in data:
                             success, chan, payload = self.usb_mux_parser.parse_byte(b)
                             if success:
                                 if chan == CHAN_CONFIG:
                                     self._parse_config_packet(payload)
                                 elif chan == CHAN_MAVLINK:
-                                    # Forward RAW, UNWRAPPED MAVLink payload directly to UDP socket!
                                     if self.udp_sock and self.udp_client_addr:
                                         try:
                                             self.udp_sock.sendto(payload, self.udp_client_addr)
@@ -241,12 +237,10 @@ class SerialConnection:
         while self.running:
             if self.udp_sock:
                 try:
-                    # Read complete datagram packet from GCS (Mission Planner) at once!
                     data, addr = self.udp_sock.recvfrom(2048)
                     if data:
                         self.udp_client_addr = addr
                         if self.ser and self.ser.is_open:
-                            # Wrap MAVLink datagram inside CHAN_MAVLINK multiplexer frame before writing to serial!
                             framed = mux_encode(CHAN_MAVLINK, data)
                             self.ser.write(framed)
                             self.ser.flush()
@@ -259,8 +253,8 @@ class SerialConnection:
                 time.sleep(0.1)
 
     def _parse_config_packet(self, packet):
-        # The configuration payload itself is raw binary structured data (41 bytes)
-        if len(packet) < 41:
+        # Packed config packet is now 57 bytes long inside CHAN_CONFIG multiplexer frame
+        if len(packet) < 57:
             return
 
         system_mode = packet[0]
@@ -290,6 +284,14 @@ class SerialConnection:
         live_az = (packet[36] << 8) | packet[37]
         live_el = (packet[38] << 8) | packet[39]
 
+        # New positions switch mappings
+        vrx_positions_count = packet[40]
+        vrx_mapped_channels = []
+        idx = 41
+        for i in range(8):
+            vrx_mapped_channels.append([packet[idx], packet[idx+1]])
+            idx += 2
+
         config_dict = {
             'system_mode': system_mode,
             'az_min': az_min,
@@ -312,7 +314,9 @@ class SerialConnection:
             'active_camera': active_camera,
             'cam_rc_chan': cam_rc_chan,
             'live_az': live_az,
-            'live_el': live_el
+            'live_el': live_el,
+            'vrx_positions_count': vrx_positions_count,
+            'vrx_mapped_channels': vrx_mapped_channels
         }
 
         if self.on_config_received_cb:
