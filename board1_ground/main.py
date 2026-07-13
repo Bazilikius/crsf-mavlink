@@ -73,6 +73,24 @@ def mux_encode(chan_id, payload):
     out.append(cksum)
     return bytes(out)
 
+# Adaptive, 100% Binary-Safe VCP Stream Reader and Writer Helpers
+_has_stdout_buffer = hasattr(sys.stdout, 'buffer')
+def write_stdout_bytes(data):
+    if _has_stdout_buffer:
+        sys.stdout.buffer.write(data)
+    else:
+        # Fallback to character representation
+        sys.stdout.write(data.decode('latin-1'))
+
+_has_stdin_buffer = hasattr(sys.stdin, 'buffer')
+def read_stdin_byte():
+    if _has_stdin_buffer:
+        b = sys.stdin.buffer.read(1)
+        return b[0] if b else None
+    else:
+        char = sys.stdin.read(1)
+        return ord(char) if char else None
+
 # --- Hardware Configuration Pin Mappings ---
 PIN_I2C_SDA = 16
 PIN_I2C_SCL = 17
@@ -489,8 +507,8 @@ def send_config_to_pc():
     payload.append((config.live_elevation_deg >> 8) & 0xFF)
     payload.append(config.live_elevation_deg & 0xFF)
 
-    payload = mux_encode(CHAN_CONFIG, payload)
-    sys.stdout.write(payload.decode('latin-1'))
+    packet = mux_encode(CHAN_CONFIG, payload)
+    write_stdout_bytes(packet)
 
 def process_pc_command(payload):
     if not payload: return
@@ -621,19 +639,16 @@ def main():
         if events:
             for fd, event in events:
                 if fd == sys.stdin:
-                    # Non-blocking stdin reading compatible with standard MicroPython on RP2040
-                    data_str = sys.stdin.read(1)
-                    if data_str:
-                        # Feed the incoming byte to our PC Mux Parser
-                        for char in data_str:
-                            b = ord(char)
-                            success, chan, payload = pc_mux_parser.parse_byte(b)
-                            if success:
-                                if chan == CHAN_CONFIG:
-                                    process_pc_command(payload)
-                                elif chan == CHAN_MAVLINK:
-                                    # Forward MAVLink over UART1 to Board 2
-                                    uart1.write(mux_encode(CHAN_MAVLINK, payload))
+                    # Non-blocking byte-level stdin reading compatible with standard MicroPython on RP2040 (Raspberry Pi Pico)
+                    b = read_stdin_byte()
+                    if b is not None:
+                        success, chan, payload = pc_mux_parser.parse_byte(b)
+                        if success:
+                            if chan == CHAN_CONFIG:
+                                process_pc_command(payload)
+                            elif chan == CHAN_MAVLINK:
+                                # Forward MAVLink over UART1 to Board 2
+                                uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 elif fd == uart1:
                     b_buf = uart1.read()
                     if b_buf:
@@ -643,7 +658,7 @@ def main():
                                 if chan == CHAN_MAVLINK:
                                     # Forward MAVLink wrapped in Mux frame over USB to PC Configurator
                                     enc_val = mux_encode(CHAN_MAVLINK, payload)
-                                    sys.stdout.write(enc_val.decode('latin-1'))
+                                    write_stdout_bytes(enc_val)
 
                                     # Parse locally for tracker math
                                     for byte in payload:
@@ -651,7 +666,7 @@ def main():
                                 elif chan == CHAN_CRSF:
                                     # Forward CRSF wrapped in Mux frame over USB to PC Configurator
                                     enc_val = mux_encode(CHAN_CRSF, payload)
-                                    sys.stdout.write(enc_val.decode('latin-1'))
+                                    write_stdout_bytes(enc_val)
 
                                     for byte in payload:
                                         process_crsf_byte(byte)

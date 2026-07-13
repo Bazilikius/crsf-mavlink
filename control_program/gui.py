@@ -10,7 +10,7 @@ class ConfiguratorApp:
         self.root.geometry("680x700")
         self.root.resizable(False, False)
 
-        self.conn = SerialConnection(on_config_received_cb=self.on_config_received)
+        self.conn = SerialConnection(on_config_received_cb=self.on_config_received, log_message_cb=self.log)
 
         # Configure styles
         style = ttk.Style()
@@ -254,7 +254,7 @@ class ConfiguratorApp:
         self.cam_combo = ttk.Combobox(parent, textvariable=self.active_cam_var, values=["Analog Camera", "VRX Camera"], width=15, state="readonly")
         self.cam_combo.grid(row=9, column=1, sticky="w", padx=10, pady=5)
 
-        self.pot_override_var = tk.BooleanVar(value=False)
+        self.pot_override_var = tk.BooleanVar()
         self.chk_pot_override = ttk.Checkbutton(parent, text="Manual Potentiometer Servo Control Override", variable=self.pot_override_var)
         self.chk_pot_override.grid(row=10, column=0, columnspan=2, sticky="w", padx=40, pady=8)
 
@@ -403,3 +403,4 @@ class ConfiguratorApp:
         self.lbl_live_el.config(text=f"Live Elevation: {config['live_el']}° (180° Limit)")
 
         self.log(f"Stats Update: AZ={config['live_az']}°, EL={config['live_el']}°, Override={config['manual_override']}, Cam={'VRX' if config['active_camera'] == 1 else 'Analog'}")
+ZOOM = 1.0
