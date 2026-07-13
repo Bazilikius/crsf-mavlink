@@ -595,6 +595,11 @@ def process_pc_command(payload):
             if config.vrx_control_mode == 4:
                 b, ch = config.vrx_mapped_channels[0]
                 vrx_set_band_channel(b, ch)
+    elif cmd == 0x45: # Direct I2C Video Receiver Band/Channel Change Command
+        band = payload[1]
+        channel = payload[2]
+        vrx_set_band_channel(band, channel)
+        send_config_to_pc()
     elif cmd == 0x50:
         send_config_to_pc()
     elif cmd == 0x60:

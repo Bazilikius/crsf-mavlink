@@ -42,6 +42,9 @@ class ConfiguratorApp:
         self.gs_dot_img = None
         self.uav_dot_img = None
 
+        # Interactive Frequency Grid Cells Cache
+        self.freq_buttons = {}
+
         # Configure styles
         style = ttk.Style()
         style.theme_use('clam')
@@ -111,6 +114,40 @@ class ConfiguratorApp:
                 if (x - 4.5)**2 + (y - 4.5)**2 <= 25.0:
                     img.put(color, (x, y))
         return img
+
+    def on_freq_cell_clicked(self, band_idx, chan_idx):
+        # 1. Click select the video channel for all modes except S2 + 6POS (Simultaneous)
+        current_mode_str = self.vrx_mode_var.get()
+        if current_mode_str == "S2 + 6POS (Simultaneous)":
+            self.log("Cannot select frequency manually in S2 + 6POS mode. Use your transmitter S2/6POS toggle switches!")
+            messagebox.showwarning(
+                "Manual Selection Disabled",
+                "Video channel manual selection is disabled in 'S2 + 6POS (Simultaneous)' control mode.\n\n"
+                "In this mode, frequencies are adjusted dynamically by your physical transmitter dials/switches.",
+                parent=self.root
+            )
+            return
+
+        freq_mhz = VRX_FREQ_TABLE[band_idx][chan_idx]
+        band_name = BANDS_LIST[band_idx]
+        self.log(f"Selecting Video Frequency cell: {band_name}, Channel {chan_idx+1} ({freq_mhz} MHz)")
+
+        # 2. Transmit Command 0x45 over serial to tune the FT System 5.8G receiver immediately
+        payload = [0x45, band_idx, chan_idx]
+        if self.conn.send_command(payload):
+            # Highlight this clicked cell immediately for zero-latency UI updates!
+            self.highlight_active_freq_cell(band_idx, chan_idx)
+        else:
+            self.log("Failed to send direct frequency set command. Check connection.")
+
+    def highlight_active_freq_cell(self, active_band, active_chan):
+        # Scan and update backgrounds of all cells
+        for (b, c), btn in self.freq_buttons.items():
+            if b == active_band and c == active_chan:
+                # Active cell gets high-contrast green highlight background!
+                btn.config(bg="#90EE90", relief="sunken", font=('Segoe UI', 8, 'bold'))
+            else:
+                btn.config(bg="#F0F0F0", relief="groove", font=('Segoe UI', 8))
 
     def log(self, msg):
         self.txt_log.config(state="normal")
@@ -423,9 +460,39 @@ class ConfiguratorApp:
         self.combo_vrx_mode.grid(row=0, column=1, columnspan=2, sticky="w", padx=10, pady=5)
         self.combo_vrx_mode.bind("<<ComboboxSelected>>", lambda e: self.on_vrx_control_mode_switched())
 
-        # 2. S2 & 6POS Switches Configuration Frame
+        # 1a. Interactive Video Frequency Table Grid (Click to Select)
+        grid_frame = ttk.LabelFrame(parent, text=" Interactive Video Frequency Grid Table (Click to Select) ")
+        grid_frame.grid(row=1, column=0, columnspan=4, sticky="ew", padx=15, pady=5)
+
+        # Grid Headers for Channels 1 to 8
+        for col_idx in range(8):
+            lbl_ch = ttk.Label(grid_frame, text=f"Ch {col_idx+1}", font=('Segoe UI', 9, 'bold'))
+            lbl_ch.grid(row=0, column=col_idx+1, padx=4, pady=2)
+
+        # Draw 6 Bands x 8 Channels
+        for b_idx in range(6):
+            lbl_band = ttk.Label(grid_frame, text=BANDS_LIST[b_idx], font=('Segoe UI', 9, 'bold'), width=12, anchor="w")
+            lbl_band.grid(row=b_idx+1, column=0, padx=6, pady=2, sticky="w")
+
+            for c_idx in range(8):
+                freq_val = VRX_FREQ_TABLE[b_idx][c_idx]
+                btn_freq = tk.Button(
+                    grid_frame,
+                    text=str(freq_val),
+                    font=('Segoe UI', 8),
+                    width=5,
+                    relief="groove",
+                    borderwidth=1,
+                    bg="#F0F0F0",
+                    activebackground="#90EE90",
+                    command=lambda b=b_idx, c=c_idx: self.on_freq_cell_clicked(b, c)
+                )
+                btn_freq.grid(row=b_idx+1, column=c_idx+1, padx=3, pady=2)
+                self.freq_buttons[(b_idx, c_idx)] = btn_freq
+
+        # 2. S2 & 6POS Switches Configuration Frame (Shifted to row 2)
         self.sw_frame = ttk.LabelFrame(parent, text=" Switches Pin & Type Configurations ")
-        self.sw_frame.grid(row=1, column=0, columnspan=4, sticky="ew", padx=15, pady=5)
+        self.sw_frame.grid(row=2, column=0, columnspan=4, sticky="ew", padx=15, pady=5)
 
         # S2 switch
         ttk.Label(self.sw_frame, text="S2 RC Channel:").grid(row=0, column=0, sticky="e", padx=10, pady=5)
@@ -461,9 +528,9 @@ class ConfiguratorApp:
         self.ent_pos_count.grid(row=2, column=3, sticky="w", padx=10, pady=5)
         self.ent_pos_count.bind("<KeyRelease>", lambda e: self.update_switch_table_rows())
 
-        # 3. Dynamic Positions Table mapping Frame (Only active in Custom Positions Mode)
+        # 3. Dynamic Positions Table mapping Frame (Only active in Custom Positions Mode - shifted to row 3)
         self.table_frame = ttk.LabelFrame(parent, text=" Switch Positions to Video Channel Mapping Table ")
-        self.table_frame.grid(row=2, column=0, columnspan=4, sticky="nsew", padx=15, pady=5)
+        self.table_frame.grid(row=3, column=0, columnspan=4, sticky="nsew", padx=15, pady=5)
 
         ttk.Label(self.table_frame, text="RC Position", font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, padx=15, pady=2)
         ttk.Label(self.table_frame, text="Target Band", font=('Segoe UI', 9, 'bold')).grid(row=0, column=1, padx=15, pady=2)
@@ -812,6 +879,9 @@ class ConfiguratorApp:
 
         self.update_switch_table_rows()
         self.on_vrx_control_mode_switched()
+
+        # Highlight the current active video frequency cell in the grid
+        self.highlight_active_freq_cell(config['vrx_band'], config['vrx_chan'])
 
         self.log(f"Stats Update: AZ={config['live_az']}°, EL={config['live_el']}°, Override={config['manual_override']}, Cam={'VRX' if config['active_camera'] == 1 else 'Analog'}, Switch_Pos={config['vrx_positions_count']}")
 ZOOM = 1.0
