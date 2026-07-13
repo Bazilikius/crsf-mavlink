@@ -3,6 +3,7 @@ import serial.tools.list_ports
 import struct
 import threading
 import time
+import socket
 
 class SerialConnection:
     def __init__(self, on_config_received_cb=None):
@@ -10,6 +11,12 @@ class SerialConnection:
         self.read_thread = None
         self.running = False
         self.on_config_received_cb = on_config_received_cb
+
+        # MAVLink UDP Proxy Settings
+        self.udp_sock = None
+        self.udp_thread = None
+        self.udp_client_addr = None
+        self.udp_port = 14550 # Standard Mission Planner / QGC UDP Port
 
     @staticmethod
     def list_ports():
@@ -20,20 +27,40 @@ class SerialConnection:
         try:
             self.ser = serial.Serial(port, baudrate, timeout=0.1)
             self.running = True
+
+            # Start MAVLink UDP Proxy Socket
+            self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp_sock.bind(('127.0.0.1', self.udp_port))
+            self.udp_sock.settimeout(0.1)
+
+            # Start Background Threads
             self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
             self.read_thread.start()
+
+            self.udp_thread = threading.Thread(target=self._udp_loop, daemon=True)
+            self.udp_thread.start()
+
             return True
         except Exception as e:
             print(f"Error connecting to serial port: {e}")
+            self.disconnect()
             return False
 
     def disconnect(self):
         self.running = False
         if self.read_thread:
             self.read_thread.join(timeout=1.0)
+        if self.udp_thread:
+            self.udp_thread.join(timeout=1.0)
+
         if self.ser and self.ser.is_open:
             self.ser.close()
         self.ser = None
+
+        if self.udp_sock:
+            self.udp_sock.close()
+        self.udp_sock = None
+        self.udp_client_addr = None
 
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
@@ -104,27 +131,44 @@ class SerialConnection:
                 try:
                     if self.ser.in_waiting > 0:
                         data = self.ser.read(self.ser.in_waiting)
-                        buffer.extend(data)
 
-                        # Parse loop to find 43-byte robust Config response
-                        # [0xCF][0xFC][system_mode]...[checksum]
-                        while len(buffer) >= 43:
-                            idx = buffer.find(b'\xCF\xFC')
-                            if idx == -1:
-                                if buffer.endswith(b'\xCF'):
-                                    buffer = buffer[-1:]
-                                else:
-                                    buffer.clear()
-                                break
-                            elif idx > 0:
-                                del buffer[:idx]
-                                continue
-
-                            packet = buffer[:43]
-                            self._parse_config_packet(packet)
-                            del buffer[:43]
+                        # Process bytes one by one to isolate Config packets and route MAVLink
+                        i = 0
+                        while i < len(data):
+                            # Look for 43-byte robust Config response [0xCF][0xFC]
+                            if i <= len(data) - 43 and data[i] == 0xCF and data[i+1] == 0xFC:
+                                packet = data[i:i+43]
+                                self._parse_config_packet(packet)
+                                i += 43
+                            else:
+                                # Standard telemetry byte -> Route to MAVLink UDP Client (Mission Planner)
+                                if self.udp_sock and self.udp_client_addr:
+                                    try:
+                                        self.udp_sock.sendto(bytes([data[i]]), self.udp_client_addr)
+                                    except Exception:
+                                        pass
+                                i += 1
                 except Exception as e:
                     print(f"Error in serial reading thread: {e}")
+                    time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _udp_loop(self):
+        # Listens for MAVLink packets from Mission Planner on port 14550 and forwards to YD-RP2040
+        while self.running:
+            if self.udp_sock:
+                try:
+                    data, addr = self.udp_sock.recvfrom(1024)
+                    if data:
+                        self.udp_client_addr = addr # Remember client address
+                        if self.ser and self.ser.is_open:
+                            self.ser.write(data)
+                            self.ser.flush()
+                except socket.timeout:
+                    pass
+                except Exception as e:
+                    print(f"Error in UDP proxy thread: {e}")
                     time.sleep(0.1)
             else:
                 time.sleep(0.1)
@@ -160,7 +204,6 @@ class SerialConnection:
         vrx_chan = packet[32]
         vrx_mhz = (packet[33] << 8) | packet[34]
 
-        # New robust parameters
         manual_override = packet[35]
         active_camera = packet[36]
         cam_rc_chan = packet[37]

@@ -4,13 +4,72 @@ import sys
 import rp2
 import select
 
-# Import shared protocol
-sys.path.append('')
-sys.path.append('shared')
-try:
-    from shared.mux_protocol import MuxParser, mux_encode, CHAN_MAVLINK, CHAN_CRSF, CHAN_CONFIG
-except ImportError:
-    from mux_protocol import MuxParser, mux_encode, CHAN_MAVLINK, CHAN_CRSF, CHAN_CONFIG
+# --- Shared Multiplexer Protocol (Embedded for Self-Containment) ---
+SYNC1 = 0xAA
+SYNC2 = 0x55
+
+CHAN_CRSF = 0x01
+CHAN_MAVLINK = 0x02
+CHAN_CONFIG = 0x03
+
+class MuxParser:
+    def __init__(self):
+        self.state = 0 # 0: SYNC1, 1: SYNC2, 2: CHAN_ID, 3: LEN, 4: PAYLOAD, 5: CHECKSUM
+        self.chan_id = 0
+        self.length = 0
+        self.payload = bytearray()
+        self.checksum = 0
+
+    def parse_byte(self, b):
+        if self.state == 0:
+            if b == SYNC1:
+                self.state = 1
+        elif self.state == 1:
+            if b == SYNC2:
+                self.state = 2
+            elif b == SYNC1:
+                self.state = 1
+            else:
+                self.state = 0
+        elif self.state == 2:
+            if b in [CHAN_CRSF, CHAN_MAVLINK, CHAN_CONFIG]:
+                self.chan_id = b
+                self.state = 3
+            elif b == SYNC1:
+                self.state = 1
+            else:
+                self.state = 0
+        elif self.state == 3:
+            self.length = b
+            self.payload = bytearray()
+            if b == 0:
+                self.state = 5
+            else:
+                self.state = 4
+        elif self.state == 4:
+            self.payload.append(b)
+            if len(self.payload) >= self.length:
+                self.state = 5
+        elif self.state == 5:
+            self.checksum = b
+            self.state = 0
+            calc = (self.chan_id + len(self.payload)) & 0xFF
+            for x in self.payload:
+                calc = (calc + x) & 0xFF
+            if calc == self.checksum:
+                return True, self.chan_id, bytes(self.payload)
+        return False, 0, b""
+
+def mux_encode(chan_id, payload):
+    if isinstance(payload, str):
+        payload = payload.encode('utf-8')
+    out = bytearray([SYNC1, SYNC2, chan_id, len(payload)])
+    out.extend(payload)
+    cksum = (chan_id + len(payload)) & 0xFF
+    for b in payload:
+        cksum = (cksum + b) & 0xFF
+    out.append(cksum)
+    return bytes(out)
 
 # --- Hardware Configuration Pin Mappings ---
 PIN_UART1_TX = 4
@@ -44,26 +103,27 @@ jr2_pwr_pin = machine.Pin(PIN_JR2_PWR, machine.Pin.OUT)
 # --- PIO Soft-UART Driver for JR Module 2 (CRSF @ 420000 bps) ---
 @rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT)
 def pio_uart_tx():
-    # 8 cycles per bit at 8 * 420000Hz clock frequency
+    # Frequency is 8 * 420000 = 3360000 Hz
+    # 8 cycles per bit
     pull()
-    set(pins, 0)         .side(0) [7] # Start bit
+    set(x, 7)            .side(0) [7] # Start bit (low) for 8 cycles
     label("bit_loop")
-    out(pins, 1)                  [6] # Shift out data bits
-    jmp(not_osre, "bit_loop")
-    nop()                .side(1) [7] # Stop bit
+    out(pins, 1)                  [6] # Out 1 bit, wait 7 cycles total
+    jmp(x_dec, "bit_loop")
+    nop()                .side(1) [7] # Stop bit (high) for 8 cycles
 
 @rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT)
 def pio_uart_rx():
     label("start")
-    wait(0, pin, 0)               # Wait for start bit
-    set(x, 7)            [10]     # Pre-delay to center sample
+    wait(0, pin, 0)
+    set(x, 7)            [10]
     label("bit_loop")
-    in_(pins, 1)         [6]      # Sample bits
+    in_(pins, 1)         [6]
     jmp(x_dec, "bit_loop")
     push()
     jmp("start")
 
-# Instantiate PIO state machines on pio0 (Frequency: 8 * 420000 = 3360000 Hz)
+# Instantiate PIO state machines on pio0 (Frequency: 3360000 Hz)
 sm_tx = rp2.StateMachine(0, pio_uart_tx, freq=3360000, sideset_base=machine.Pin(PIN_JR2_TX), out_base=machine.Pin(PIN_JR2_TX))
 sm_rx = rp2.StateMachine(1, pio_uart_rx, freq=3360000, in_base=machine.Pin(PIN_JR2_RX))
 
@@ -72,13 +132,11 @@ sm_rx.active(1)
 
 def pio_write(data):
     for b in data:
-        # MicroPython StateMachine.put accepts 32-bit values. Align left for RIGHT shifting.
-        sm_tx.put(b << 24)
+        sm_tx.put(b)
 
 def pio_read():
     buf = bytearray()
     while sm_rx.rx_fifo():
-        # Get 32-bit value and extract the shifted 8-bit byte
         val = sm_rx.get() >> 24
         buf.append(val)
     return bytes(buf)
@@ -112,16 +170,6 @@ def crsf_crc8(ptr):
                 crc = (crc << 1) & 0xFF
     return crc
 
-# 2. MAVLink X.25 CRC
-def mavlink_crc_accumulate(byte, crc):
-    tmp = byte ^ (crc & 0xFF)
-    tmp ^= (tmp << 4) & 0xFF
-    return ((crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)) & 0xFFFF
-
-def get_mavlink_crc_extra(msg_id):
-    extras = {0: 50, 1: 103, 24: 30, 30: 39, 33: 104, 74: 20}
-    return extras.get(msg_id, 0)
-
 # Parsing filters for JR1 Mixed Mode (Mode 1)
 jr1_crsf_state = 0
 jr1_crsf_buf = bytearray()
@@ -130,12 +178,11 @@ jr1_crsf_len = 0
 jr1_mav_state = 0
 jr1_mav_buf = bytearray()
 jr1_mav_len = 0
-jr1_mav_crc = 0xFFFF
 jr1_mav_is_v2 = False
 
 def parse_and_forward_jr1_mixed(b):
     global jr1_crsf_state, jr1_crsf_buf, jr1_crsf_len
-    global jr1_mav_state, jr1_mav_buf, jr1_mav_len, jr1_mav_crc, jr1_mav_is_v2
+    global jr1_mav_state, jr1_mav_buf, jr1_mav_len, jr1_mav_is_v2
 
     # --- CRSF Checksum Validated Parser ---
     if jr1_crsf_state == 0:
@@ -151,53 +198,33 @@ def parse_and_forward_jr1_mixed(b):
             jr1_crsf_state = 0
     elif jr1_crsf_state == 2:
         jr1_crsf_buf.append(b)
-        # Total CRSF packet length is length + 2 (addr and length bytes)
         if len(jr1_crsf_buf) >= jr1_crsf_len + 2:
-            # Validate CRC-8 on payload (from type byte at index 2 to end of payload)
             calc = crsf_crc8(jr1_crsf_buf[2:-1])
             parsed = jr1_crsf_buf[-1]
             if calc == parsed:
                 uart1.write(mux_encode(CHAN_CRSF, jr1_crsf_buf))
             jr1_crsf_state = 0
 
-    # --- MAVLink Checksum Validated Parser ---
+    # --- Permissive MAVLink Parser ---
     if jr1_mav_state == 0:
         if b == 0xFE: # v1
             jr1_mav_is_v2 = False
-            jr1_mav_crc = 0xFFFF
             jr1_mav_buf = bytearray([b])
             jr1_mav_state = 1
         elif b == 0xFD: # v2
             jr1_mav_is_v2 = True
-            jr1_mav_crc = 0xFFFF
             jr1_mav_buf = bytearray([b])
             jr1_mav_state = 1
     elif jr1_mav_state == 1:
         jr1_mav_len = b
-        jr1_mav_crc = mavlink_crc_accumulate(b, jr1_mav_crc)
         jr1_mav_buf.append(b)
         jr1_mav_state = 2
     elif jr1_mav_state == 2:
         jr1_mav_buf.append(b)
         target_len = (jr1_mav_len + 12) if jr1_mav_is_v2 else (jr1_mav_len + 8)
-
-        # Accumulate CRC on all bytes excluding STX and the last two CRC bytes
-        if len(jr1_mav_buf) <= target_len - 2:
-            jr1_mav_crc = mavlink_crc_accumulate(b, jr1_mav_crc)
-
         if len(jr1_mav_buf) >= target_len:
-            # Parse MSG ID
-            if jr1_mav_is_v2:
-                msg_id = jr1_mav_buf[7] | (jr1_mav_buf[8] << 8) | (jr1_mav_buf[9] << 16)
-            else:
-                msg_id = jr1_mav_buf[5]
-
-            parsed_crc = jr1_mav_buf[-2] | (jr1_mav_buf[-1] << 8)
-            extra = get_mavlink_crc_extra(msg_id)
-            final_crc = mavlink_crc_accumulate(extra, jr1_mav_crc)
-
-            if final_crc == parsed_crc:
-                uart1.write(mux_encode(CHAN_MAVLINK, jr1_mav_buf))
+            # Package and forward frame to Board 1
+            uart1.write(mux_encode(CHAN_MAVLINK, jr1_mav_buf))
             jr1_mav_state = 0
 
 # --- Command Parser ---
@@ -214,7 +241,6 @@ def main():
     poll.register(uart0, select.POLLIN)
 
     while True:
-        # 1. Inputs from Board 1 Ground Station (UART1)
         events = poll.poll(1)
         if events:
             if uart1.any():
@@ -233,7 +259,6 @@ def main():
                         elif chan == CHAN_CONFIG:
                             switcher_process_command(payload)
 
-        # 2. Inputs from active JR Modules
         if active_mode == MODE_JR1_ALL:
             if uart0.any():
                 b_buf = uart0.read()
@@ -246,12 +271,10 @@ def main():
                 uart1.write(mux_encode(CHAN_CRSF, p_data))
 
         elif active_mode == MODE_SIMULTANEOUS:
-            # JR1 handles MAVLink exclusively
             if uart0.any():
                 m_data = uart0.read()
                 if m_data:
                     uart1.write(mux_encode(CHAN_MAVLINK, m_data))
-            # JR2 handles CRSF exclusively
             p_data = pio_read()
             if p_data:
                 uart1.write(mux_encode(CHAN_CRSF, p_data))

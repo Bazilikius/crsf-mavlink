@@ -6,13 +6,72 @@ import struct
 import select
 import time
 
-# Import shared protocol
-sys.path.append('')
-sys.path.append('shared')
-try:
-    from shared.mux_protocol import MuxParser, mux_encode, CHAN_MAVLINK, CHAN_CRSF, CHAN_CONFIG
-except ImportError:
-    from mux_protocol import MuxParser, mux_encode, CHAN_MAVLINK, CHAN_CRSF, CHAN_CONFIG
+# --- Shared Multiplexer Protocol (Embedded for Self-Containment) ---
+SYNC1 = 0xAA
+SYNC2 = 0x55
+
+CHAN_CRSF = 0x01
+CHAN_MAVLINK = 0x02
+CHAN_CONFIG = 0x03
+
+class MuxParser:
+    def __init__(self):
+        self.state = 0 # 0: SYNC1, 1: SYNC2, 2: CHAN_ID, 3: LEN, 4: PAYLOAD, 5: CHECKSUM
+        self.chan_id = 0
+        self.length = 0
+        self.payload = bytearray()
+        self.checksum = 0
+
+    def parse_byte(self, b):
+        if self.state == 0:
+            if b == SYNC1:
+                self.state = 1
+        elif self.state == 1:
+            if b == SYNC2:
+                self.state = 2
+            elif b == SYNC1:
+                self.state = 1
+            else:
+                self.state = 0
+        elif self.state == 2:
+            if b in [CHAN_CRSF, CHAN_MAVLINK, CHAN_CONFIG]:
+                self.chan_id = b
+                self.state = 3
+            elif b == SYNC1:
+                self.state = 1
+            else:
+                self.state = 0
+        elif self.state == 3:
+            self.length = b
+            self.payload = bytearray()
+            if b == 0:
+                self.state = 5
+            else:
+                self.state = 4
+        elif self.state == 4:
+            self.payload.append(b)
+            if len(self.payload) >= self.length:
+                self.state = 5
+        elif self.state == 5:
+            self.checksum = b
+            self.state = 0
+            calc = (self.chan_id + len(self.payload)) & 0xFF
+            for x in self.payload:
+                calc = (calc + x) & 0xFF
+            if calc == self.checksum:
+                return True, self.chan_id, bytes(self.payload)
+        return False, 0, b""
+
+def mux_encode(chan_id, payload):
+    if isinstance(payload, str):
+        payload = payload.encode('utf-8')
+    out = bytearray([SYNC1, SYNC2, chan_id, len(payload)])
+    out.extend(payload)
+    cksum = (chan_id + len(payload)) & 0xFF
+    for b in payload:
+        cksum = (cksum + b) & 0xFF
+    out.append(cksum)
+    return bytes(out)
 
 # --- Hardware Configuration Pin Mappings ---
 PIN_SERVO_AZ = 14
@@ -85,9 +144,6 @@ adc_pot_el = machine.ADC(machine.Pin(PIN_ADC_POT_EL))
 # 5. Camera Switch
 cam_switch_pin = machine.Pin(PIN_CAM_SWITCH, machine.Pin.OUT)
 
-# 6. USB Virtual COM Port (Non-blocking)
-usb_vcp = machine.USB_VCP()
-
 # --- Helper Functions ---
 def set_servo_pwm(pwm_obj, pulse_us, min_us, max_us):
     pulse_us = max(min_us, min(pulse_us, max_us))
@@ -145,15 +201,21 @@ OLED_INIT_CMDS = [
     0xDB, 0x40, 0xA4, 0xA6, 0xAF
 ]
 
+# Pre-allocated single bytearray to prevent garbage collector pauses/allocation
+_oled_cmd_buf = bytearray(2)
 def oled_send_cmd(cmd):
+    _oled_cmd_buf[0] = 0x00
+    _oled_cmd_buf[1] = cmd
     try:
-        i2c0.writeto(OLED_ADDR, bytearray([0x00, cmd]))
+        i2c0.writeto(OLED_ADDR, _oled_cmd_buf)
     except Exception:
         pass
 
+# Pre-allocated data block header
+_oled_data_hdr = bytearray([0x40])
 def oled_send_data(data):
     try:
-        i2c0.writeto(OLED_ADDR, bytearray([0x40]) + data)
+        i2c0.writeto(OLED_ADDR, _oled_data_hdr + data)
     except Exception:
         pass
 
@@ -442,10 +504,7 @@ def send_config_to_pc():
     cksum = sum(payload) & 0xFF
     packet.append(cksum)
 
-    if usb_vcp and usb_vcp.any():
-        usb_vcp.write(packet)
-    else:
-        sys.stdout.write(packet.decode('latin-1'))
+    sys.stdout.buffer.write(packet)
 
 def process_pc_command(payload):
     if not payload: return
@@ -555,6 +614,7 @@ def main():
 
     last_update_ms = 0
     poll = select.poll()
+    poll.register(sys.stdin, select.POLLIN)
     poll.register(uart1, select.POLLIN)
 
     while True:
@@ -564,28 +624,29 @@ def main():
             tracker_read_potentiometers()
             oled_update_display()
 
-        if usb_vcp and usb_vcp.any():
-            data = usb_vcp.read()
-            if data:
-                process_pc_command(data)
-
         events = poll.poll(1)
         if events:
-            if uart1.any():
-                b_buf = uart1.read()
-                for b in b_buf:
-                    success, chan, payload = mux_parser.parse_byte(b)
-                    if success:
-                        if chan == CHAN_MAVLINK:
-                            if usb_vcp and usb_vcp.any():
-                                usb_vcp.write(payload)
-                            for byte in payload:
-                                mav_parser.parse_byte(byte)
-                        elif chan == CHAN_CRSF:
-                            for byte in payload:
-                                process_crsf_byte(byte)
-                        elif chan == CHAN_CONFIG:
-                            process_pc_command(payload)
+            for fd, event in events:
+                if fd == sys.stdin:
+                    # Non-blocking USB VCP read from stdin
+                    data = sys.stdin.buffer.read(32)
+                    if data:
+                        process_pc_command(data)
+                elif fd == uart1:
+                    # Board 2 link input
+                    b_buf = uart1.read()
+                    for b in b_buf:
+                        success, chan, payload = mux_parser.parse_byte(b)
+                        if success:
+                            if chan == CHAN_MAVLINK:
+                                sys.stdout.buffer.write(payload)
+                                for byte in payload:
+                                    mav_parser.parse_byte(byte)
+                            elif chan == CHAN_CRSF:
+                                for byte in payload:
+                                    process_crsf_byte(byte)
+                            elif chan == CHAN_CONFIG:
+                                process_pc_command(payload)
 
 if __name__ == '__main__':
     main()
