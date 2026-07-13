@@ -102,6 +102,16 @@ class ConfiguratorApp:
         self.txt_log = tk.Text(log_frame, height=5, wrap="word", state="disabled", font=('Courier New', 9))
         self.txt_log.pack(fill="both", expand=True, padx=10, pady=5)
 
+    def make_dot_image(self, color):
+        # Create a programmatically generated high-contrast 10-pixel solid circular icon
+        img = tk.PhotoImage(width=10, height=10)
+        # circle equation: (x-4.5)^2 + (y-4.5)^2 <= 5.0^2
+        for y in range(10):
+            for x in range(10):
+                if (x - 4.5)**2 + (y - 4.5)**2 <= 25.0:
+                    img.put(color, (x, y))
+        return img
+
     def log(self, msg):
         self.txt_log.config(state="normal")
         self.txt_log.insert("end", f"[{self.get_time_str()}] {msg}\n")
