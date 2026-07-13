@@ -3,6 +3,10 @@ import machine
 import sys
 import rp2
 import select
+import micropython
+
+# Disable REPL keyboard interrupts to allow 100% binary-safe serial streaming!
+micropython.kbd_intr(-1)
 
 # --- Shared Multiplexer Protocol (Embedded for Self-Containment) ---
 SYNC1 = 0xAA
@@ -265,8 +269,12 @@ def main():
     poll.register(uart0, select.POLLIN)
 
     while True:
-        events = poll.poll(1)
+        # Run poll with 0 timeout to execute completely non-blocking, maintaining full PIO Soft-UART speed!
+        events = poll.poll(0)
         if events:
+            for fd, event in events:
+                if fd == uart1.any(): # Or check uart1 readability
+                    pass
             if uart1.any():
                 data = uart1.read()
                 for b in data:
@@ -283,6 +291,7 @@ def main():
                         elif chan == CHAN_CONFIG:
                             switcher_process_command(payload)
 
+        # Read active JR Module inputs
         if active_mode == MODE_JR1_ALL:
             if uart0.any():
                 b_buf = uart0.read()

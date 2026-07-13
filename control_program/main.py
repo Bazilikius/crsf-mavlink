@@ -6,8 +6,8 @@ def main():
     app = ConfiguratorApp(root)
 
     # Run the Tkinter main loop
-    # Will start the beautiful visual interface for configuration, calibration,
-    # mode switching and monitoring.
+    # Starts the beautiful visual GUI interface for configuration, calibration,
+    # mode switching, active telemetry display, and camera toggles.
     root.mainloop()
 
 if __name__ == "__main__":

@@ -3,8 +3,12 @@ import machine
 import sys
 import math
 import struct
-import select
+import uselect
 import time
+import micropython
+
+# Disable REPL keyboard interrupts to allow 100% binary-safe USB serial data streaming!
+micropython.kbd_intr(-1)
 
 # --- Shared Multiplexer Protocol (Embedded for Self-Containment) ---
 SYNC1 = 0xAA
@@ -79,7 +83,6 @@ def write_stdout_bytes(data):
     if _has_stdout_buffer:
         sys.stdout.buffer.write(data)
     else:
-        # Fallback to character representation
         sys.stdout.write(data.decode('latin-1'))
 
 _has_stdin_buffer = hasattr(sys.stdin, 'buffer')
@@ -141,11 +144,11 @@ mux_parser = MuxParser()
 pc_mux_parser = MuxParser()
 
 # --- Hardware Initializations ---
-# 1. UART1 for inter-board communication
-uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX))
+# 1. UART1 for inter-board communication (increased rxbuf to 4096 bytes to completely prevent any screen-write bottlenecks!)
+uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
 
-# 2. I2C0 for SSD1306 and VRX (shared I2C0 bus)
-i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=100000)
+# 2. I2C0 for SSD1306 and VRX (Fast mode 400kHz to complete writes 4x faster!)
+i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
 
 # 3. ADCs for potentiometers
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
@@ -618,10 +621,7 @@ def main():
     last_pot_update_ms = 0
     last_oled_update_ms = 0
 
-    poll = select.poll()
-    poll.register(sys.stdin, select.POLLIN)
-    poll.register(uart1, select.POLLIN)
-
+    # Non-blocking USB VCP polling of standard input using standard select.select()
     while True:
         now = time.ticks_ms()
 
@@ -635,43 +635,43 @@ def main():
             last_oled_update_ms = now
             oled_update_display()
 
-        events = poll.poll(1)
-        if events:
-            for fd, event in events:
-                if fd == sys.stdin:
-                    # Non-blocking byte-level stdin reading compatible with standard MicroPython on RP2040 (Raspberry Pi Pico)
-                    b = read_stdin_byte()
-                    if b is not None:
-                        success, chan, payload = pc_mux_parser.parse_byte(b)
-                        if success:
-                            if chan == CHAN_CONFIG:
-                                process_pc_command(payload)
-                            elif chan == CHAN_MAVLINK:
-                                # Forward MAVLink over UART1 to Board 2
-                                uart1.write(mux_encode(CHAN_MAVLINK, payload))
-                elif fd == uart1:
-                    b_buf = uart1.read()
-                    if b_buf:
-                        for b in b_buf:
-                            success, chan, payload = mux_parser.parse_byte(b)
-                            if success:
-                                if chan == CHAN_MAVLINK:
-                                    # Forward MAVLink wrapped in Mux frame over USB to PC Configurator
-                                    enc_val = mux_encode(CHAN_MAVLINK, payload)
-                                    write_stdout_bytes(enc_val)
+        # 3. Read incoming bytes from USB stdin (VCP) non-blocking using select.select()
+        r, _, _ = uselect.select([sys.stdin], [], [], 0)
+        if r:
+            b = read_stdin_byte()
+            if b is not None:
+                success, chan, payload = pc_mux_parser.parse_byte(b)
+                if success:
+                    if chan == CHAN_CONFIG:
+                        process_pc_command(payload)
+                    elif chan == CHAN_MAVLINK:
+                        # Forward MAVLink over UART1 to Board 2
+                        uart1.write(mux_encode(CHAN_MAVLINK, payload))
 
-                                    # Parse locally for tracker math
-                                    for byte in payload:
-                                        mav_parser.parse_byte(byte)
-                                elif chan == CHAN_CRSF:
-                                    # Forward CRSF wrapped in Mux frame over USB to PC Configurator
-                                    enc_val = mux_encode(CHAN_CRSF, payload)
-                                    write_stdout_bytes(enc_val)
+        # 4. Read incoming bytes from UART1 (Board 2 inter-board link)
+        if uart1.any():
+            b_buf = uart1.read()
+            if b_buf:
+                for b in b_buf:
+                    success, chan, payload = mux_parser.parse_byte(b)
+                    if success:
+                        if chan == CHAN_MAVLINK:
+                            # Forward MAVLink wrapped in Mux frame over USB to PC Configurator
+                            enc_val = mux_encode(CHAN_MAVLINK, payload)
+                            write_stdout_bytes(enc_val)
 
-                                    for byte in payload:
-                                        process_crsf_byte(byte)
-                                elif chan == CHAN_CONFIG:
-                                    process_pc_command(payload)
+                            # Parse locally for tracker math
+                            for byte in payload:
+                                mav_parser.parse_byte(byte)
+                        elif chan == CHAN_CRSF:
+                            # Forward CRSF wrapped in Mux frame over USB to PC Configurator
+                            enc_val = mux_encode(CHAN_CRSF, payload)
+                            write_stdout_bytes(enc_val)
+
+                            for byte in payload:
+                                process_crsf_byte(byte)
+                        elif chan == CHAN_CONFIG:
+                            process_pc_command(payload)
 
 if __name__ == '__main__':
     main()
