@@ -102,6 +102,8 @@ PIN_UART_RX = 5
 PIN_CAM_SWITCH = 18
 PIN_ADC_POT_AZ = 26
 PIN_ADC_POT_EL = 27
+PIN_TX16S_TX = 0
+PIN_TX16S_RX = 1
 
 # --- Global System Configuration & State ---
 class SystemConfig:
@@ -174,6 +176,7 @@ pc_mux_parser = MuxParser()
 
 # --- Hardware Initializations ---
 uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
+uart0 = machine.UART(0, baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
 adc_pot_el = machine.ADC(machine.Pin(PIN_ADC_POT_EL))
@@ -614,6 +617,11 @@ def process_pc_command(payload):
                 config.jr1_crsf_baud = (payload[idx] << 8) | payload[idx+1]
                 config.jr1_mav_baud = (payload[idx+2] << 8) | payload[idx+3]
                 config.jr2_crsf_baud = (payload[idx+4] << 8) | payload[idx+5]
+                # Dynamically update the TX16S CRSF UART0 baudrate on Board 1
+                try:
+                    uart0.init(baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
+                except Exception:
+                    pass
 
             # Forward the exact configuration to board 2 RF switcher over UART1
             uart1.write(mux_encode(CHAN_CONFIG, payload))
@@ -778,6 +786,7 @@ def main():
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
     poll.register(uart1, select.POLLIN)
+    poll.register(uart0, select.POLLIN)
 
     while True:
         now = time.ticks_ms()
@@ -792,7 +801,7 @@ def main():
             last_oled_update_ms = now
             oled_update_display()
 
-        # 3. Unified Poll for non-blocking I/O (handling both USB Stdin and inter-board UART1)
+        # 3. Unified Poll for non-blocking I/O (handling USB Stdin, inter-board UART1, and TX16S UART0)
         events = poll.poll(0)
         for obj, event in events:
             if obj == sys.stdin and (event & select.POLLIN):
@@ -804,6 +813,15 @@ def main():
                             process_pc_command(payload)
                         elif chan == CHAN_MAVLINK:
                             uart1.write(mux_encode(CHAN_MAVLINK, payload))
+
+            elif obj == uart0 and (event & select.POLLIN):
+                b_buf = uart0.read()
+                if b_buf:
+                    # Forward raw CRSF from TX16S directly to Board 2 as multiplexed CHAN_CRSF packets
+                    uart1.write(mux_encode(CHAN_CRSF, b_buf))
+                    # Also parse locally for VRX/Cam switching logic
+                    for b in b_buf:
+                        process_crsf_byte(b)
 
             elif obj == uart1 and (event & select.POLLIN):
                 b_buf = uart1.read()
@@ -820,6 +838,11 @@ def main():
                             elif chan == CHAN_CRSF:
                                 enc_val = mux_encode(CHAN_CRSF, payload)
                                 write_stdout_bytes(enc_val)
+                                # Write received CRSF back to TX16S
+                                try:
+                                    uart0.write(payload)
+                                except Exception:
+                                    pass
 
                                 for byte in payload:
                                     process_crsf_byte(byte)

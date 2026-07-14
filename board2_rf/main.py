@@ -105,9 +105,12 @@ mux_parser = MuxParser()
 # 1. UART1 for Board 1 link (Baud 460800)
 uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX))
 
-# 2. Power Enable Pins
-jr1_pwr_pin = machine.Pin(PIN_JR1_PWR, machine.Pin.OUT)
-jr2_pwr_pin = machine.Pin(PIN_JR2_PWR, machine.Pin.OUT)
+# 2. Power Enable PWMs (for standard RC switches: 2000us is ON, 1000us is OFF)
+pwm_pwr1 = machine.PWM(machine.Pin(PIN_JR1_PWR))
+pwm_pwr1.freq(50)
+
+pwm_pwr2 = machine.PWM(machine.Pin(PIN_JR2_PWR))
+pwm_pwr2.freq(50)
 
 # 3. Servo PWMs on Board 2
 pwm_az = machine.PWM(machine.Pin(PIN_SERVO_AZ))
@@ -208,18 +211,23 @@ def pio_read_jr2():
     return bytes(buf) if buf else b""
 
 # --- Switcher Logic and Module Powering ---
+def set_pwm_switch(pwm_obj, on):
+    pulse_us = 2000 if on else 1000
+    duty = int((pulse_us * 65535) / 20000)
+    pwm_obj.duty_u16(duty)
+
 def switcher_set_mode(mode):
     global active_mode
     active_mode = mode
     if mode == MODE_JR1_ALL:
-        jr1_pwr_pin.value(1)
-        jr2_pwr_pin.value(0)
+        set_pwm_switch(pwm_pwr1, True)
+        set_pwm_switch(pwm_pwr2, False)
     elif mode == MODE_JR2_CRSF:
-        jr1_pwr_pin.value(0)
-        jr2_pwr_pin.value(1)
+        set_pwm_switch(pwm_pwr1, False)
+        set_pwm_switch(pwm_pwr2, True)
     elif mode == MODE_SIMULTANEOUS:
-        jr1_pwr_pin.value(1)
-        jr2_pwr_pin.value(1)
+        set_pwm_switch(pwm_pwr1, True)
+        set_pwm_switch(pwm_pwr2, True)
 
 switcher_set_mode(active_mode)
 
