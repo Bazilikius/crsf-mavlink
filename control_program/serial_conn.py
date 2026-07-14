@@ -152,12 +152,12 @@ class SerialConnection:
         self.udp_client_addr = None
         self.udp_port = 14550 # Standard Mission Planner / QGC UDP Port
 
-        # Secondary MAVLink UDP Proxy Settings
+        # Secondary MAVLink UDP Proxy Settings (Aligned with MAVP2P bat script)
         self.udp_sock_sec = None
         self.udp_thread_sec = None
         self.udp_client_addr_sec = None
-        self.udp_port_sec = 14556
-        self.udp_tx_port_sec = 2228
+        self.udp_port_sec = 14445  # Receives UDP from MAVP2P udps:127.0.0.1:14445
+        self.udp_tx_port_sec = 14446  # Transmits UDP to MAVP2P udpc:127.0.0.1:14446
 
         # Parse state
         self.usb_mux_parser = MuxParser()
