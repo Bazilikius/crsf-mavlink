@@ -570,10 +570,20 @@ class ConfiguratorApp:
         )
         self.btn_cal_set.pack(side="right", padx=2)
 
+        # Live tracking feedback displays inside Tab 2
+        feedback_frame = ttk.Frame(parent)
+        feedback_frame.grid(row=13, column=0, columnspan=4, sticky="ew", padx=15, pady=2)
+
+        self.lbl_live_az = ttk.Label(feedback_frame, text="Live Azimuth: 0° (360° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
+        self.lbl_live_az.pack(side="left", expand=True, padx=10)
+
+        self.lbl_live_el = ttk.Label(feedback_frame, text="Live Elevation: 0° (180° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
+        self.lbl_live_el.pack(side="right", expand=True, padx=10)
+
         # Map widget (reduced size by approximately 50%)
         # Original size was full panel, now reduced to width=450, height=245.
         self.map_view = tkintermapview.TkinterMapView(parent, width=450, height=245, corner_radius=10)
-        self.map_view.grid(row=13, column=0, columnspan=4, sticky="nsew", padx=20, pady=5)
+        self.map_view.grid(row=14, column=0, columnspan=4, sticky="nsew", padx=20, pady=5)
 
         # Generate 10px circular markers programmatically to fulfill "reduce the antenna markers to 10 pixels"
         self.gs_dot_img = self.make_dot_image("blue")
@@ -735,16 +745,6 @@ class ConfiguratorApp:
 
         self.btn_update_cam = ttk.Button(parent, text="Apply Camera & Potentiometer Settings", command=self.on_apply_cam)
         self.btn_update_cam.grid(row=9, column=0, columnspan=4, sticky="ew", padx=30, pady=5)
-
-        # 5. Live Tracking Status Feedback
-        div2 = ttk.Separator(parent, orient="horizontal")
-        div2.grid(row=10, column=0, columnspan=4, sticky="ew", pady=5)
-
-        self.lbl_live_az = ttk.Label(parent, text="Live Azimuth: 0° (360° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
-        self.lbl_live_az.grid(row=11, column=0, columnspan=2, pady=2)
-
-        self.lbl_live_el = ttk.Label(parent, text="Live Elevation: 0° (180° Limit)", font=('Segoe UI', 10, 'bold'), foreground='#1A365D')
-        self.lbl_live_el.grid(row=11, column=2, columnspan=2, pady=2)
 
     # ------------------- Tab UI Helpers -------------------
     def on_vrx_control_mode_switched(self):
