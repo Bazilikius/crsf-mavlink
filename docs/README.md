@@ -74,9 +74,23 @@ This system utilizes two YD-RP2040 boards running MicroPython, connected via a h
 
 ---
 
+## Automatic Startup on Re-power / Power-On
+
+Both boards are designed to automatically run and operate on power-on or re-power. To configure this:
+1. Save `board1_ground/main.py` onto Board 1's root directory as **`main.py`**.
+2. Save `board2_rf/main.py` onto Board 2's root directory as **`main.py`**.
+3. Once named `main.py`, MicroPython will automatically execute the multiplexer and switcher loops immediately upon power-up/re-power.
+
+---
+
 ## Running the PC Control Program
 
 The PC Configurator application allows real-time switching between JR module modes, calibrating tracker servos, setting home coordinates, and configuring video receiver (VRX) frequencies.
+
+### Real-Time Status Indicators (Visual Panel)
+The PC Configurator features status indicators on the connection panel:
+* **RF Board ONLINE/OFFLINE**: Live heartbeat detection. Board 2 periodically sends heartbeats over UART1 to Board 1, which communicates this state to the PC to verify the RF Board connection.
+* **MAV OK / MAV: NO DATA**: Verifies that MAVLink telemetry is actively transferring through the system.
 
 ### Setup Instructions
 1. Ensure Python 3 is installed.

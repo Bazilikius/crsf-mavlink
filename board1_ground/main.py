@@ -174,6 +174,10 @@ config = SystemConfig()
 mux_parser = MuxParser()
 pc_mux_parser = MuxParser()
 
+# Connection status tracking
+last_rf_board_msg_ms = 0
+last_mav_msg_ms = 0
+
 # --- Hardware Initializations ---
 uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
 uart0 = machine.UART(0, baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
@@ -569,6 +573,15 @@ def send_config_to_pc():
     payload.append((config.jr2_crsf_baud >> 8) & 0xFF)
     payload.append(config.jr2_crsf_baud & 0xFF)
 
+    # Append rf_board_online and mavlink_active connection indicators (Bytes 68 and 69)
+    global last_rf_board_msg_ms, last_mav_msg_ms
+    now = time.ticks_ms()
+    rf_board_online = 1 if time.ticks_diff(now, last_rf_board_msg_ms) < 2500 else 0
+    mavlink_active = 1 if time.ticks_diff(now, last_mav_msg_ms) < 3000 else 0
+
+    payload.append(rf_board_online)
+    payload.append(mavlink_active)
+
     packet = mux_encode(CHAN_CONFIG, payload)
     write_stdout_bytes(packet)
 
@@ -782,11 +795,14 @@ def main():
 
     last_pot_update_ms = 0
     last_oled_update_ms = 0
+    last_pc_status_ms = 0
 
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
     poll.register(uart1, select.POLLIN)
     poll.register(uart0, select.POLLIN)
+
+    global last_rf_board_msg_ms, last_mav_msg_ms
 
     while True:
         now = time.ticks_ms()
@@ -800,6 +816,11 @@ def main():
         if time.ticks_diff(now, last_oled_update_ms) >= 500:
             last_oled_update_ms = now
             oled_update_display()
+
+        # 2a. Periodically send system config and connection/MAVLink status to PC (1000ms interval)
+        if time.ticks_diff(now, last_pc_status_ms) >= 1000:
+            last_pc_status_ms = now
+            send_config_to_pc()
 
         # 3. Unified Poll for non-blocking I/O (handling USB Stdin, inter-board UART1, and TX16S UART0)
         events = poll.poll(0)
@@ -826,10 +847,12 @@ def main():
             elif obj == uart1 and (event & select.POLLIN):
                 b_buf = uart1.read()
                 if b_buf:
+                    last_rf_board_msg_ms = time.ticks_ms() # We received valid UART bytes from Board 2!
                     for b in b_buf:
                         success, chan, payload = mux_parser.parse_byte(b)
                         if success:
                             if chan == CHAN_MAVLINK:
+                                last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
                                 enc_val = mux_encode(CHAN_MAVLINK, payload)
                                 write_stdout_bytes(enc_val)
 
@@ -847,7 +870,11 @@ def main():
                                 for byte in payload:
                                     process_crsf_byte(byte)
                             elif chan == CHAN_CONFIG:
-                                process_pc_command(payload)
+                                # 0x99 is the periodic RF Switcher ping. If received, simply register connection.
+                                if len(payload) > 0 and payload[0] == 0x99:
+                                    pass
+                                else:
+                                    process_pc_command(payload)
 
 if __name__ == '__main__':
     main()

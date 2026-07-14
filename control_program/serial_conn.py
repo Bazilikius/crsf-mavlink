@@ -449,6 +449,8 @@ class SerialConnection:
         jr1_crsf_baud = 4200
         jr1_mav_baud = 1152
         jr2_crsf_baud = 4200
+        rf_board_online = 0
+        mavlink_active = 0
 
         if len(packet) >= 62:
             vrx_control_mode = packet[57]
@@ -461,6 +463,10 @@ class SerialConnection:
             jr1_crsf_baud = (packet[62] << 8) | packet[63]
             jr1_mav_baud = (packet[64] << 8) | packet[65]
             jr2_crsf_baud = (packet[66] << 8) | packet[67]
+
+        if len(packet) >= 70:
+            rf_board_online = packet[68]
+            mavlink_active = packet[69]
 
         config_dict = {
             'system_mode': system_mode,
@@ -494,7 +500,9 @@ class SerialConnection:
             'vrx_6pos_switch_type': vrx_6pos_switch_type,
             'jr1_crsf_baud': jr1_crsf_baud,
             'jr1_mav_baud': jr1_mav_baud,
-            'jr2_crsf_baud': jr2_crsf_baud
+            'jr2_crsf_baud': jr2_crsf_baud,
+            'rf_board_online': rf_board_online,
+            'mavlink_active': mavlink_active
         }
 
         if self.on_config_received_cb:

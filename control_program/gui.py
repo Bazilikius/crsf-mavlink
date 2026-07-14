@@ -135,6 +135,12 @@ class ConfiguratorApp:
         self.lbl_status = ttk.Label(conn_frame, text="Disconnected", font=('Segoe UI', 10, 'italic'), foreground='red')
         self.lbl_status.pack(side="right", padx=15, pady=8)
 
+        self.lbl_rf_status = ttk.Label(conn_frame, text="RF: OFFLINE", font=('Segoe UI', 10, 'bold'), foreground='red')
+        self.lbl_rf_status.pack(side="right", padx=15, pady=8)
+
+        self.lbl_mav_status = ttk.Label(conn_frame, text="MAV: NO DATA", font=('Segoe UI', 10, 'bold'), foreground='red')
+        self.lbl_mav_status.pack(side="right", padx=15, pady=8)
+
         # Notebook for Tabs
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=15, pady=5)
@@ -300,6 +306,8 @@ class ConfiguratorApp:
             self.conn.disconnect()
             self.btn_connect['text'] = "Connect"
             self.lbl_status.config(text="Disconnected", foreground='red')
+            self.lbl_rf_status.config(text="RF: OFFLINE", foreground='red')
+            self.lbl_mav_status.config(text="MAV: NO DATA", foreground='red')
             self.log("Serial port disconnected.")
 
     def toggle_always_on_top(self):
@@ -1069,6 +1077,17 @@ class ConfiguratorApp:
 
         # Highlight the current active video frequency cell in the grid
         self.highlight_active_freq_cell(config['vrx_band'], config['vrx_chan'])
+
+        # Update connection status indicator labels
+        if config.get('rf_board_online', 0) == 1:
+            self.lbl_rf_status.config(text="RF: ONLINE", foreground='green')
+        else:
+            self.lbl_rf_status.config(text="RF: OFFLINE", foreground='red')
+
+        if config.get('mavlink_active', 0) == 1:
+            self.lbl_mav_status.config(text="MAV OK", foreground='green')
+        else:
+            self.lbl_mav_status.config(text="MAV: NO DATA", foreground='red')
 
         self.log(f"Stats Update: AZ={config['live_az']}°, EL={config['live_el']}°, Override={config['manual_override']}, Cam={'VRX' if config['active_camera'] == 1 else 'Analog'}, Switch_Pos={config['vrx_positions_count']}")
 ZOOM = 1.0
