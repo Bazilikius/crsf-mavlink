@@ -24,6 +24,9 @@ This system utilizes two YD-RP2040 boards running MicroPython, connected via a h
 * **High-Speed Inter-Board UART (UART 1)**:
   * **TX**: `GPIO 4` -> Connect to Board 2 `GPIO 5` (RX)
   * **RX**: `GPIO 5` -> Connect to Board 2 `GPIO 4` (TX)
+* **Radiomaster TX16S Connection (UART 0)**:
+  * **TX**: `GPIO 0` -> Connect to TX16S RX
+  * **RX**: `GPIO 1` -> Connect to TX16S TX
 * **Potentiometers**:
   * **Azimuth Pot (Manual override)**: `GPIO 26` (ADC 0)
   * **Elevation Pot (Manual override)**: `GPIO 27` (ADC 1)
@@ -41,14 +44,18 @@ This system utilizes two YD-RP2040 boards running MicroPython, connected via a h
 * **Servos**:
   * **Azimuth Servo (Pan, 360°)**: `GPIO 14` (PWM Output)
   * **Elevation Servo (Tilt, 180°)**: `GPIO 15` (PWM Output)
-* **JR Module 1 (UART 0) - CRSF + MAVLink**:
-  * **TX**: `GPIO 0` -> Connect to JR Module 1 RX
-  * **RX**: `GPIO 1` -> Connect to JR Module 1 TX
-  * **Power Enable**: `GPIO 12` (Active High)
-* **JR Module 2 (PIO SoftUART) - CRSF Only**:
-  * **TX**: `GPIO 8` -> Connect to JR Module 2 RX
-  * **RX**: `GPIO 9` -> Connect to JR Module 2 TX
-  * **Power Enable**: `GPIO 13` (Active High)
+* **JR Module 1 - Dual Interface (Hardware UART 0 + PIO Soft-UART)**:
+  * **MAVLink (Hardware UART 0)**:
+    * **TX**: `GPIO 0` -> Connect to JR Module 1 MAVLink RX
+    * **RX**: `GPIO 1` -> Connect to JR Module 1 MAVLink TX
+  * **CRSF (PIO Soft-UART, State Machine 0/1)**:
+    * **TX**: `GPIO 10` -> Connect to JR Module 1 CRSF RX
+    * **RX**: `GPIO 11` -> Connect to JR Module 1 CRSF TX
+  * **Power Enable**: `GPIO 12` (Controlled via 50Hz PWM: 2000us is ON, 1000us is OFF to drive RC electronic switches)
+* **JR Module 2 - CRSF Only (PIO Soft-UART, State Machine 2/3)**:
+  * **TX**: `GPIO 8` -> Connect to JR Module 2 CRSF RX
+  * **RX**: `GPIO 9` -> Connect to JR Module 2 CRSF TX
+  * **Power Enable**: `GPIO 13` (Controlled via 50Hz PWM: 2000us is ON, 1000us is OFF to drive RC electronic switches)
 
 ---
 
