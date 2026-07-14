@@ -78,21 +78,45 @@ def mux_encode(chan_id, payload):
     return bytes(out)
 
 # Adaptive, 100% Binary-Safe VCP Stream Reader and Writer Helpers
-_has_stdout_buffer = hasattr(sys.stdout, 'buffer')
+try:
+    _usb = machine.USB_VCP()
+except Exception:
+    _usb = None
+
 def write_stdout_bytes(data):
-    if _has_stdout_buffer:
+    if _usb is not None:
+        try:
+            _usb.write(data)
+            return
+        except Exception:
+            pass
+    if hasattr(sys.stdout, 'buffer'):
         sys.stdout.buffer.write(data)
     else:
-        sys.stdout.write(data.decode('latin-1'))
+        try:
+            # Fallback that avoids UTF-8 multi-byte encoding for >127 bytes if writing to stdout stream directly
+            sys.stdout.write(data.decode('latin-1'))
+        except Exception:
+            pass
 
-_has_stdin_buffer = hasattr(sys.stdin, 'buffer')
 def read_stdin_byte():
-    if _has_stdin_buffer:
-        b = sys.stdin.buffer.read(1)
-        return b[0] if b else None
-    else:
+    if _usb is not None:
+        try:
+            b = _usb.read(1)
+            return b[0] if b else None
+        except Exception:
+            pass
+    if hasattr(sys.stdin, 'buffer'):
+        try:
+            b = sys.stdin.buffer.read(1)
+            return b[0] if b else None
+        except Exception:
+            pass
+    try:
         char = sys.stdin.read(1)
         return ord(char) if char else None
+    except Exception:
+        return None
 
 # --- Hardware Configuration Pin Mappings ---
 PIN_I2C_SDA = 16
@@ -798,7 +822,10 @@ def main():
     last_pc_status_ms = 0
 
     poll = select.poll()
-    poll.register(sys.stdin, select.POLLIN)
+    if _usb is not None:
+        poll.register(_usb, select.POLLIN)
+    else:
+        poll.register(sys.stdin, select.POLLIN)
     poll.register(uart1, select.POLLIN)
     poll.register(uart0, select.POLLIN)
 
@@ -825,7 +852,7 @@ def main():
         # 3. Unified Poll for non-blocking I/O (handling USB Stdin, inter-board UART1, and TX16S UART0)
         events = poll.poll(0)
         for obj, event in events:
-            if obj == sys.stdin and (event & select.POLLIN):
+            if (obj == sys.stdin or (_usb is not None and obj == _usb)) and (event & select.POLLIN):
                 b = read_stdin_byte()
                 if b is not None:
                     success, chan, payload = pc_mux_parser.parse_byte(b)
