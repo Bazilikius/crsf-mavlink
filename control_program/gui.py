@@ -450,7 +450,7 @@ class ConfiguratorApp:
         baud_frame = ttk.LabelFrame(parent, text=" Configure JR Modules Baudrates ")
         baud_frame.pack(fill="x", padx=30, pady=10)
 
-        baud_opts = ["9600", "57600", "115200", "420000", "460800"]
+        baud_opts = ["9600", "57600", "115200", "400000", "420000", "460800"]
 
         ttk.Label(baud_frame, text="JR1 CRSF Baudrate:").grid(row=0, column=0, sticky="e", padx=10, pady=10)
         self.jr1_crsf_baud_var = tk.StringVar(value="420000")
