@@ -62,13 +62,19 @@ class MuxParser:
         return False, 0, b""
 
 def mux_encode(chan_id, payload):
-    out = bytearray([SYNC1, SYNC2, chan_id, len(payload)])
-    out.extend(payload)
-    cksum = (chan_id + len(payload)) & 0xFF
-    for b in payload:
-        cksum = (cksum + b) & 0xFF
-    out.append(cksum)
-    return bytes(out)
+    chunks = []
+    i = 0
+    while i < len(payload):
+        chunk = payload[i:i+255]
+        out = bytearray([SYNC1, SYNC2, chan_id, len(chunk)])
+        out.extend(chunk)
+        cksum = (chan_id + len(chunk)) & 0xFF
+        for b in chunk:
+            cksum = (cksum + b) & 0xFF
+        out.append(cksum)
+        chunks.append(bytes(out))
+        i += 255
+    return b"".join(chunks)
 
 
 class PythonMavlinkParser:

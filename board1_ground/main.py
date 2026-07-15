@@ -69,13 +69,19 @@ class MuxParser:
 def mux_encode(chan_id, payload):
     if isinstance(payload, str):
         payload = payload.encode('utf-8')
-    out = bytearray([SYNC1, SYNC2, chan_id, len(payload)])
-    out.extend(payload)
-    cksum = (chan_id + len(payload)) & 0xFF
-    for b in payload:
-        cksum = (cksum + b) & 0xFF
-    out.append(cksum)
-    return bytes(out)
+    chunks = []
+    i = 0
+    while i < len(payload):
+        chunk = payload[i:i+255]
+        out = bytearray([SYNC1, SYNC2, chan_id, len(chunk)])
+        out.extend(chunk)
+        cksum = (chan_id + len(chunk)) & 0xFF
+        for b in chunk:
+            cksum = (cksum + b) & 0xFF
+        out.append(cksum)
+        chunks.append(bytes(out))
+        i += 255
+    return b"".join(chunks)
 
 # Adaptive, 100% Binary-Safe VCP Stream Reader and Writer Helpers
 try:
@@ -826,8 +832,6 @@ def main():
         poll.register(_usb, select.POLLIN)
     else:
         poll.register(sys.stdin, select.POLLIN)
-    poll.register(uart1, select.POLLIN)
-    poll.register(uart0, select.POLLIN)
 
     global last_rf_board_msg_ms, last_mav_msg_ms
 
@@ -849,7 +853,49 @@ def main():
             last_pc_status_ms = now
             send_config_to_pc()
 
-        # 3. Unified Poll for non-blocking I/O (handling USB Stdin, inter-board UART1, and TX16S UART0)
+        # 3. Direct hardware UART polling (safe, robust, and bypasses select.poll() compatibility limits)
+        if uart0.any():
+            b_buf = uart0.read()
+            if b_buf:
+                # Forward raw CRSF from TX16S directly to Board 2 as multiplexed CHAN_CRSF packets
+                uart1.write(mux_encode(CHAN_CRSF, b_buf))
+                # Also parse locally for VRX/Cam switching logic
+                for b in b_buf:
+                    process_crsf_byte(b)
+
+        if uart1.any():
+            b_buf = uart1.read()
+            if b_buf:
+                last_rf_board_msg_ms = time.ticks_ms() # We received valid UART bytes from Board 2!
+                for b in b_buf:
+                    success, chan, payload = mux_parser.parse_byte(b)
+                    if success:
+                        if chan == CHAN_MAVLINK:
+                            last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
+                            enc_val = mux_encode(CHAN_MAVLINK, payload)
+                            write_stdout_bytes(enc_val)
+
+                            for byte in payload:
+                                mav_parser.parse_byte(byte)
+                        elif chan == CHAN_CRSF:
+                            enc_val = mux_encode(CHAN_CRSF, payload)
+                            write_stdout_bytes(enc_val)
+                            # Write received CRSF back to TX16S
+                            try:
+                                uart0.write(payload)
+                            except Exception:
+                                pass
+
+                            for byte in payload:
+                                process_crsf_byte(byte)
+                        elif chan == CHAN_CONFIG:
+                            # 0x99 is the periodic RF Switcher ping. If received, simply register connection.
+                            if len(payload) > 0 and payload[0] == 0x99:
+                                pass
+                            else:
+                                process_pc_command(payload)
+
+        # 4. Unified Poll for USB VCP Stdin
         events = poll.poll(0)
         for obj, event in events:
             if (obj == sys.stdin or (_usb is not None and obj == _usb)) and (event & select.POLLIN):
@@ -861,47 +907,6 @@ def main():
                             process_pc_command(payload)
                         elif chan == CHAN_MAVLINK:
                             uart1.write(mux_encode(CHAN_MAVLINK, payload))
-
-            elif obj == uart0 and (event & select.POLLIN):
-                b_buf = uart0.read()
-                if b_buf:
-                    # Forward raw CRSF from TX16S directly to Board 2 as multiplexed CHAN_CRSF packets
-                    uart1.write(mux_encode(CHAN_CRSF, b_buf))
-                    # Also parse locally for VRX/Cam switching logic
-                    for b in b_buf:
-                        process_crsf_byte(b)
-
-            elif obj == uart1 and (event & select.POLLIN):
-                b_buf = uart1.read()
-                if b_buf:
-                    last_rf_board_msg_ms = time.ticks_ms() # We received valid UART bytes from Board 2!
-                    for b in b_buf:
-                        success, chan, payload = mux_parser.parse_byte(b)
-                        if success:
-                            if chan == CHAN_MAVLINK:
-                                last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
-                                enc_val = mux_encode(CHAN_MAVLINK, payload)
-                                write_stdout_bytes(enc_val)
-
-                                for byte in payload:
-                                    mav_parser.parse_byte(byte)
-                            elif chan == CHAN_CRSF:
-                                enc_val = mux_encode(CHAN_CRSF, payload)
-                                write_stdout_bytes(enc_val)
-                                # Write received CRSF back to TX16S
-                                try:
-                                    uart0.write(payload)
-                                except Exception:
-                                    pass
-
-                                for byte in payload:
-                                    process_crsf_byte(byte)
-                            elif chan == CHAN_CONFIG:
-                                # 0x99 is the periodic RF Switcher ping. If received, simply register connection.
-                                if len(payload) > 0 and payload[0] == 0x99:
-                                    pass
-                                else:
-                                    process_pc_command(payload)
 
 if __name__ == '__main__':
     main()

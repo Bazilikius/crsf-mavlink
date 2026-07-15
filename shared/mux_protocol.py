@@ -63,7 +63,13 @@ def calculate_checksum(chan_id, payload):
 def mux_encode(chan_id, payload):
     if isinstance(payload, str):
         payload = payload.encode('utf-8')
-    out = bytearray([SYNC1, SYNC2, chan_id, len(payload)])
-    out.extend(payload)
-    out.append(calculate_checksum(chan_id, payload))
-    return bytes(out)
+
+    # Safe chunking to prevent length ValueError when buffers exceed 255 bytes under heavy traffic
+    chunks = []
+    for i in range(0, len(payload), 255):
+        chunk = payload[i:i+255]
+        out = bytearray([SYNC1, SYNC2, chan_id, len(chunk)])
+        out.extend(chunk)
+        out.append(calculate_checksum(chan_id, chunk))
+        chunks.append(bytes(out))
+    return b"".join(chunks)

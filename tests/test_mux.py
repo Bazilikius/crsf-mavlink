@@ -60,7 +60,31 @@ class MuxParserPython:
                 return True, self.chan_id, bytes(self.payload)
         return False, 0, b""
 
+from shared.mux_protocol import mux_encode, MuxParser
+
 class TestMuxProtocol(unittest.TestCase):
+    def test_large_chunk_encoding(self):
+        # Create a payload > 255 bytes (e.g. 600 bytes)
+        payload = bytes(range(256)) * 2 + bytes(range(88)) # 600 bytes
+        frame = mux_encode(0x02, payload)
+
+        # Verify it has multiple frames (each chunk max length is 255 bytes + 5 bytes overhead = 260 bytes)
+        # 600 bytes should split into: 255, 255, 90. Total 3 chunks.
+        # Total encoded length should be 3 * 5 + 600 = 615 bytes.
+        self.assertEqual(len(frame), 615)
+
+        # Verify parsing reconstructs the parts
+        parser = MuxParser()
+        parsed_payloads = []
+        for b in frame:
+            success, chan, chunk = parser.parse_byte(b)
+            if success:
+                self.assertEqual(chan, 0x02)
+                parsed_payloads.append(chunk)
+
+        self.assertEqual(len(parsed_payloads), 3)
+        self.assertEqual(b"".join(parsed_payloads), payload)
+
     def test_encoding_decoding(self):
         parser = MuxParserPython()
         payload = b"MAVLink_Data_123"

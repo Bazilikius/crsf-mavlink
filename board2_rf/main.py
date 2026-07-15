@@ -67,13 +67,19 @@ class MuxParser:
 def mux_encode(chan_id, payload):
     if isinstance(payload, str):
         payload = payload.encode('utf-8')
-    out = bytearray([SYNC1, SYNC2, chan_id, len(payload)])
-    out.extend(payload)
-    cksum = (chan_id + len(payload)) & 0xFF
-    for b in payload:
-        cksum = (cksum + b) & 0xFF
-    out.append(cksum)
-    return bytes(out)
+    chunks = []
+    i = 0
+    while i < len(payload):
+        chunk = payload[i:i+255]
+        out = bytearray([SYNC1, SYNC2, chan_id, len(chunk)])
+        out.extend(chunk)
+        cksum = (chan_id + len(chunk)) & 0xFF
+        for b in chunk:
+            cksum = (cksum + b) & 0xFF
+        out.append(cksum)
+        chunks.append(bytes(out))
+        i += 255
+    return b"".join(chunks)
 
 # --- Hardware Configuration Pin Mappings ---
 PIN_UART1_TX = 4
@@ -129,7 +135,7 @@ set_servo_pwm(pwm_az, 1500)
 set_servo_pwm(pwm_el, 1500)
 
 # --- PIO Soft-UART Drivers (TX / RX State Machines) ---
-@rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT)
+@rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_opt=True)
 def pio_uart_tx():
     pull()
     set(x, 7)            .side(0) [7] # Start bit (low) for 8 cycles (1 set + 7 delay)
@@ -258,33 +264,38 @@ def switcher_process_command(payload):
                     current_jr2_crsf_baud = b3
                     init_jr_uarts(b1, b2, b3)
 
+import time
+
 # --- Main Polling Engine ---
 def main():
-    poll = select.poll()
-    poll.register(uart1, select.POLLIN)
-    poll.register(uart0, select.POLLIN)
-
+    last_ping_ms = 0
     while True:
-        # Run poll with 0 timeout to execute completely non-blocking, maintaining full PIO Soft-UART speed!
-        events = poll.poll(0)
-        if events:
-            for fd, event in events:
-                if fd == uart1:
-                    data = uart1.read()
-                    if data:
-                        for b in data:
-                            success, chan, payload = mux_parser.parse_byte(b)
-                            if success:
-                                if chan == CHAN_MAVLINK:
-                                    if active_mode in [MODE_JR1_ALL, MODE_SIMULTANEOUS]:
-                                        uart0.write(payload)
-                                elif chan == CHAN_CRSF:
-                                    if active_mode == MODE_JR1_ALL:
-                                        pio_write_jr1(payload)
-                                    elif active_mode in [MODE_JR2_CRSF, MODE_SIMULTANEOUS]:
-                                        pio_write_jr2(payload)
-                                elif chan == CHAN_CONFIG:
-                                    switcher_process_command(payload)
+        now = time.ticks_ms()
+        # Periodic Heartbeat/Ping to Board 1 (every 1000ms)
+        if time.ticks_diff(now, last_ping_ms) >= 1000:
+            last_ping_ms = now
+            try:
+                uart1.write(mux_encode(CHAN_CONFIG, bytearray([0x99])))
+            except Exception:
+                pass
+
+        # Direct hardware polling of UART1 command stream (failsafe & highly compatible on MicroPython 1.20+)
+        if uart1.any():
+            data = uart1.read()
+            if data:
+                for b in data:
+                    success, chan, payload = mux_parser.parse_byte(b)
+                    if success:
+                        if chan == CHAN_MAVLINK:
+                            if active_mode in [MODE_JR1_ALL, MODE_SIMULTANEOUS]:
+                                uart0.write(payload)
+                        elif chan == CHAN_CRSF:
+                            if active_mode == MODE_JR1_ALL:
+                                pio_write_jr1(payload)
+                            elif active_mode in [MODE_JR2_CRSF, MODE_SIMULTANEOUS]:
+                                pio_write_jr2(payload)
+                        elif chan == CHAN_CONFIG:
+                            switcher_process_command(payload)
 
         # Read active JR Module inputs
         if active_mode == MODE_JR1_ALL:
