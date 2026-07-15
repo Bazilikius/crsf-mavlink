@@ -380,6 +380,15 @@ class SerialConnection:
                             self.ser.flush()
                 except socket.timeout:
                     pass
+                except ConnectionResetError:
+                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
+                    pass
+                except OSError as e:
+                    if getattr(e, 'winerror', 0) == 10054:
+                        pass
+                    else:
+                        self.log(f"Error in secondary UDP proxy thread: {e}")
+                        time.sleep(0.1)
                 except Exception as e:
                     self.log(f"Error in secondary UDP proxy thread: {e}")
                     time.sleep(0.1)
@@ -399,6 +408,15 @@ class SerialConnection:
                             self.ser.flush()
                 except socket.timeout:
                     pass
+                except ConnectionResetError:
+                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
+                    pass
+                except OSError as e:
+                    if getattr(e, 'winerror', 0) == 10054:
+                        pass
+                    else:
+                        self.log(f"Error in UDP proxy thread: {e}")
+                        time.sleep(0.1)
                 except Exception as e:
                     self.log(f"Error in UDP proxy thread: {e}")
                     time.sleep(0.1)
