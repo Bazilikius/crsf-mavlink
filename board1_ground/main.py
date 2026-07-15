@@ -207,6 +207,7 @@ pc_mux_parser = MuxParser()
 # Connection status tracking
 last_rf_board_msg_ms = 0
 last_mav_msg_ms = 0
+last_pc_mux_msg_ms = 0
 
 # --- Hardware Initializations ---
 uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
@@ -551,6 +552,10 @@ mav_parser = MavlinkParser()
 
 # --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
+    # Only transmit config status to PC if PC Configurator is active
+    global last_pc_mux_msg_ms
+    if time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) >= 5000:
+        return
     # Build the 68-byte payload
     payload = bytearray([
         config.system_mode,
@@ -833,7 +838,7 @@ def main():
     else:
         poll.register(sys.stdin, select.POLLIN)
 
-    global last_rf_board_msg_ms, last_mav_msg_ms
+    global last_rf_board_msg_ms, last_mav_msg_ms, last_pc_mux_msg_ms
 
     while True:
         now = time.ticks_ms()
@@ -872,14 +877,24 @@ def main():
                     if success:
                         if chan == CHAN_MAVLINK:
                             last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
-                            enc_val = mux_encode(CHAN_MAVLINK, payload)
-                            write_stdout_bytes(enc_val)
+
+                            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
+                            if is_pc_mode:
+                                # Send multiplexed MAVLink to PC Configurator
+                                enc_val = mux_encode(CHAN_MAVLINK, payload)
+                                write_stdout_bytes(enc_val)
+                            else:
+                                # Send RAW MAVLink to direct GCS (Mission Planner/QGC)
+                                write_stdout_bytes(payload)
 
                             for byte in payload:
                                 mav_parser.parse_byte(byte)
                         elif chan == CHAN_CRSF:
-                            enc_val = mux_encode(CHAN_CRSF, payload)
-                            write_stdout_bytes(enc_val)
+                            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
+                            if is_pc_mode:
+                                enc_val = mux_encode(CHAN_CRSF, payload)
+                                write_stdout_bytes(enc_val)
+
                             # Write received CRSF back to TX16S
                             try:
                                 uart0.write(payload)
@@ -895,18 +910,44 @@ def main():
                             else:
                                 process_pc_command(payload)
 
-        # 4. Unified Poll for USB VCP Stdin
-        events = poll.poll(0)
-        for obj, event in events:
-            if (obj == sys.stdin or (_usb is not None and obj == _usb)) and (event & select.POLLIN):
-                b = read_stdin_byte()
-                if b is not None:
-                    success, chan, payload = pc_mux_parser.parse_byte(b)
-                    if success:
-                        if chan == CHAN_CONFIG:
-                            process_pc_command(payload)
-                        elif chan == CHAN_MAVLINK:
-                            uart1.write(mux_encode(CHAN_MAVLINK, payload))
+        # 4. Non-blocking high-speed VCP polling (Auto-detecting dual-mode PC Configurator / raw GCS COM connection)
+        vcp_data = None
+        if _usb is not None and _usb.any():
+            vcp_data = _usb.read()
+        else:
+            # Fallback to sys.stdin polling if _usb is None
+            events = poll.poll(0)
+            for obj, event in events:
+                if obj == sys.stdin and (event & select.POLLIN):
+                    if hasattr(sys.stdin, 'buffer'):
+                        vcp_data = sys.stdin.buffer.read(1)
+                    else:
+                        vcp_data = sys.stdin.read(1).encode('latin-1')
+
+        if vcp_data:
+            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
+            raw_vcp_in_buf = bytearray()
+
+            for b in vcp_data:
+                success, chan, payload = pc_mux_parser.parse_byte(b)
+                if success:
+                    last_pc_mux_msg_ms = time.ticks_ms()
+                    is_pc_mode = True
+                    if chan == CHAN_CONFIG:
+                        process_pc_command(payload)
+                    elif chan == CHAN_MAVLINK:
+                        uart1.write(mux_encode(CHAN_MAVLINK, payload))
+                else:
+                    if not is_pc_mode:
+                        raw_vcp_in_buf.append(b)
+
+            if len(raw_vcp_in_buf) > 0:
+                # Forward raw GCS MAVLink bytes to Board 2 inside CHAN_MAVLINK chunks
+                i = 0
+                while i < len(raw_vcp_in_buf):
+                    chunk = raw_vcp_in_buf[i:i+255]
+                    uart1.write(mux_encode(CHAN_MAVLINK, chunk))
+                    i += 255
 
 if __name__ == '__main__':
     main()
