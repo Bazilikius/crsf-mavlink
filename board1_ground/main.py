@@ -89,14 +89,15 @@ def mux_encode(chan_id, payload):
 import rp2
 
 # --- PIO Soft-UART Drivers for CH340 Adapter ---
-@rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_opt=True)
+@rp2.asm_pio(out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT, set_init=rp2.PIO.OUT_HIGH)
 def pio_uart_tx():
     pull()
-    set(x, 7)            .side(0) [7] # Start bit (low) for 8 cycles (1 set + 7 delay)
+    set(pins, 0)         [6] # Start bit (low) for 7 cycles (1 set + 6 delay)
+    set(x, 7)                # 1 cycle. Total start bit = 8 cycles!
     label("bit_loop")
-    out(pins, 1)                  [6] # Out 1 bit (1 out + 6 delay = 7 cycles)
-    jmp(x_dec, "bit_loop")            # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles!
-    nop()                .side(1) [7] # Stop bit (high) for 8 cycles (1 nop + 7 delay)
+    out(pins, 1)         [6] # Out 1 bit (1 out + 6 delay = 7 cycles)
+    jmp(x_dec, "bit_loop")   # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles!
+    set(pins, 1)         [7] # Stop bit (high) for 8 cycles (1 set + 7 delay)
 
 @rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT)
 def pio_uart_rx():
@@ -261,7 +262,7 @@ last_pc_mux_ch340_ms = 0
 # --- Hardware Initializations ---
 # Initialize CH340 Soft-UART State Machines using PIO
 try:
-    sm_ch340_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, sideset_base=machine.Pin(PIN_CH340_TX), out_base=machine.Pin(PIN_CH340_TX))
+    sm_ch340_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, set_base=machine.Pin(PIN_CH340_TX), out_base=machine.Pin(PIN_CH340_TX))
     sm_ch340_rx = rp2.StateMachine(1, pio_uart_rx, freq=115200 * 8, in_base=machine.Pin(PIN_CH340_RX, machine.Pin.IN, machine.Pin.PULL_UP))
     sm_ch340_tx.active(1)
     sm_ch340_rx.active(1)
