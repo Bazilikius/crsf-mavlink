@@ -915,29 +915,47 @@ def main():
         if _usb is not None and _usb.any():
             vcp_data = _usb.read()
         else:
-            # Fallback to sys.stdin polling if _usb is None
-            events = poll.poll(0)
-            for obj, event in events:
-                if obj == sys.stdin and (event & select.POLLIN):
+            # Fallback stdin non-blocking loop to read all available bytes
+            stdin_bytes = bytearray()
+            while True:
+                events = poll.poll(0)
+                has_input = False
+                for obj, event in events:
+                    if obj == sys.stdin and (event & select.POLLIN):
+                        has_input = True
+                        break
+                if has_input:
                     if hasattr(sys.stdin, 'buffer'):
-                        vcp_data = sys.stdin.buffer.read(1)
+                        b = sys.stdin.buffer.read(1)
                     else:
-                        vcp_data = sys.stdin.read(1).encode('latin-1')
+                        b = sys.stdin.read(1).encode('latin-1')
+                    if b:
+                        stdin_bytes.extend(b)
+                    else:
+                        break
+                else:
+                    break
+            if len(stdin_bytes) > 0:
+                vcp_data = stdin_bytes
 
         if vcp_data:
             is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
             raw_vcp_in_buf = bytearray()
 
             for b in vcp_data:
-                success, chan, payload = pc_mux_parser.parse_byte(b)
-                if success:
-                    last_pc_mux_msg_ms = time.ticks_ms()
-                    is_pc_mode = True
-                    if chan == CHAN_CONFIG:
-                        process_pc_command(payload)
-                    elif chan == CHAN_MAVLINK:
-                        uart1.write(mux_encode(CHAN_MAVLINK, payload))
+                # Is this byte part of a multiplexer frame?
+                # It is if the parser is already parsing (state > 0) OR if the byte is SYNC1 (0xAA)
+                if pc_mux_parser.state > 0 or b == SYNC1:
+                    success, chan, payload = pc_mux_parser.parse_byte(b)
+                    if success:
+                        last_pc_mux_msg_ms = time.ticks_ms()
+                        is_pc_mode = True
+                        if chan == CHAN_CONFIG:
+                            process_pc_command(payload)
+                        elif chan == CHAN_MAVLINK:
+                            uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
+                    # Not a multiplexer frame byte. Treat as raw GCS MAVLink.
                     if not is_pc_mode:
                         raw_vcp_in_buf.append(b)
 
