@@ -86,6 +86,45 @@ def mux_encode(chan_id, payload):
         i += 255
     return b"".join(chunks)
 
+import rp2
+
+# --- PIO Soft-UART Drivers for CH340 Adapter ---
+@rp2.asm_pio(sideset_init=rp2.PIO.OUT_HIGH, out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT, sideset_opt=True)
+def pio_uart_tx():
+    pull()
+    set(x, 7)            .side(0) [7] # Start bit (low) for 8 cycles (1 set + 7 delay)
+    label("bit_loop")
+    out(pins, 1)                  [6] # Out 1 bit (1 out + 6 delay = 7 cycles)
+    jmp(x_dec, "bit_loop")            # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles!
+    nop()                .side(1) [7] # Stop bit (high) for 8 cycles (1 nop + 7 delay)
+
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT)
+def pio_uart_rx():
+    label("start")
+    wait(0, pin, 0)
+    set(x, 7)            [10]         # 1 set + 10 delay = 11 cycles. Sampling at cycle 11 aligns near middle of first bit.
+    label("bit_loop")
+    in_(pins, 1)         [6]          # In 1 bit (1 in + 6 delay = 7 cycles)
+    jmp(x_dec, "bit_loop")            # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles per bit!
+    push()
+    jmp("start")
+
+sm_ch340_tx = None
+sm_ch340_rx = None
+
+def pio_write_ch340(data):
+    if sm_ch340_tx is not None:
+        for b in data:
+            sm_ch340_tx.put(b)
+
+def pio_read_ch340():
+    res = bytearray()
+    if sm_ch340_rx is not None:
+        while sm_ch340_rx.rx_fifo():
+            val = (sm_ch340_rx.get() >> 24) & 0xFF
+            res.append(val)
+    return bytes(res) if len(res) > 0 else None
+
 # Adaptive, 100% Binary-Safe VCP Stream Reader and Writer Helpers
 try:
     _usb = machine.USB_VCP()
@@ -96,17 +135,17 @@ def write_stdout_bytes(data):
     if _usb is not None:
         try:
             _usb.write(data)
-            return
         except Exception:
             pass
     if hasattr(sys.stdout, 'buffer'):
-        sys.stdout.buffer.write(data)
-    else:
         try:
-            # Fallback that avoids UTF-8 multi-byte encoding for >127 bytes if writing to stdout stream directly
-            sys.stdout.write(data.decode('latin-1'))
+            sys.stdout.buffer.write(data)
         except Exception:
             pass
+    try:
+        pio_write_ch340(data)
+    except Exception:
+        pass
 
 def read_stdin_byte():
     if _usb is not None:
@@ -137,6 +176,8 @@ PIN_ADC_POT_AZ = 26
 PIN_ADC_POT_EL = 27
 PIN_TX16S_TX = 0
 PIN_TX16S_RX = 1
+PIN_CH340_TX = 12
+PIN_CH340_RX = 13
 
 # --- Global System Configuration & State ---
 class SystemConfig:
@@ -213,7 +254,17 @@ last_mav_msg_ms = 0
 last_pc_mux_msg_ms = 0
 
 # --- Hardware Initializations ---
-uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
+# Initialize CH340 Soft-UART State Machines using PIO
+try:
+    sm_ch340_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, sideset_base=machine.Pin(PIN_CH340_TX), out_base=machine.Pin(PIN_CH340_TX))
+    sm_ch340_rx = rp2.StateMachine(1, pio_uart_rx, freq=115200 * 8, in_base=machine.Pin(PIN_CH340_RX, machine.Pin.IN, machine.Pin.PULL_UP))
+    sm_ch340_tx.active(1)
+    sm_ch340_rx.active(1)
+except Exception:
+    sm_ch340_tx = None
+    sm_ch340_rx = None
+
+uart1 = machine.UART(1, baudrate=115200, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
 uart0 = machine.UART(0, baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
@@ -967,6 +1018,34 @@ def main():
                 i = 0
                 while i < len(raw_vcp_in_buf):
                     chunk = raw_vcp_in_buf[i:i+255]
+                    uart1.write(mux_encode(CHAN_MAVLINK, chunk))
+                    i += 255
+
+        # 5. Non-blocking high-speed CH340 Soft-UART polling
+        ch340_data = pio_read_ch340()
+        if ch340_data:
+            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
+            raw_ch340_in_buf = bytearray()
+
+            for b in ch340_data:
+                if pc_mux_parser.state > 0 or b == SYNC1:
+                    success, chan, payload = pc_mux_parser.parse_byte(b)
+                    if success:
+                        last_pc_mux_msg_ms = time.ticks_ms()
+                        is_pc_mode = True
+                        if chan == CHAN_CONFIG:
+                            process_pc_command(payload)
+                        elif chan == CHAN_MAVLINK:
+                            uart1.write(mux_encode(CHAN_MAVLINK, payload))
+                else:
+                    if not is_pc_mode:
+                        raw_ch340_in_buf.append(b)
+
+            if len(raw_ch340_in_buf) > 0:
+                # Forward raw GCS MAVLink bytes to Board 2 inside CHAN_MAVLINK chunks
+                i = 0
+                while i < len(raw_ch340_in_buf):
+                    chunk = raw_ch340_in_buf[i:i+255]
                     uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                     i += 255
 
