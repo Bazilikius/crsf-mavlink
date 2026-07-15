@@ -899,6 +899,12 @@ def main():
     last_oled_update_ms = 0
     last_pc_status_ms = 0
 
+    vcp_mux_buf = bytearray()
+    last_vcp_mux_byte_ms = 0
+
+    ch340_mux_buf = bytearray()
+    last_ch340_mux_byte_ms = 0
+
     poll = select.poll()
     if _usb is not None:
         poll.register(_usb, select.POLLIN)
@@ -987,6 +993,28 @@ def main():
                             else:
                                 process_pc_command(payload)
 
+        # VCP multiplexer parser timeout flush (100ms)
+        if len(vcp_mux_buf) > 0 and time.ticks_diff(now, last_vcp_mux_byte_ms) > 100:
+            if not (time.ticks_diff(now, last_pc_mux_vcp_ms) < 5000):
+                i = 0
+                while i < len(vcp_mux_buf):
+                    chunk = vcp_mux_buf[i:i+255]
+                    uart1.write(mux_encode(CHAN_MAVLINK, chunk))
+                    i += 255
+            vcp_mux_buf.clear()
+            pc_mux_parser.state = 0
+
+        # CH340 multiplexer parser timeout flush (100ms)
+        if len(ch340_mux_buf) > 0 and time.ticks_diff(now, last_ch340_mux_byte_ms) > 100:
+            if not (time.ticks_diff(now, last_pc_mux_ch340_ms) < 5000):
+                i = 0
+                while i < len(ch340_mux_buf):
+                    chunk = ch340_mux_buf[i:i+255]
+                    uart1.write(mux_encode(CHAN_MAVLINK, chunk))
+                    i += 255
+            ch340_mux_buf.clear()
+            pc_mux_parser_ch340.state = 0
+
         # 4. Non-blocking high-speed VCP polling (Auto-detecting dual-mode PC Configurator / raw GCS COM connection)
         vcp_data = None
         if _usb is not None and _usb.any():
@@ -1016,25 +1044,33 @@ def main():
                 vcp_data = stdin_bytes
 
         if vcp_data:
-            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
+            last_vcp_mux_byte_ms = now
+            vcp_is_pc_mode = (time.ticks_diff(now, last_pc_mux_vcp_ms) < 5000)
             raw_vcp_in_buf = bytearray()
 
             for b in vcp_data:
-                # Is this byte part of a multiplexer frame?
-                # It is if the parser is already parsing (state > 0) OR if the byte is SYNC1 (0xAA)
-                if pc_mux_parser.state > 0 or b == SYNC1:
+                if vcp_is_pc_mode:
                     success, chan, payload = pc_mux_parser.parse_byte(b)
                     if success:
                         last_pc_mux_vcp_ms = time.ticks_ms()
-                        vcp_is_pc_mode = True
                         if chan == CHAN_CONFIG:
                             process_pc_command(payload)
                         elif chan == CHAN_MAVLINK:
                             uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
-                    # Not a multiplexer frame byte. Treat as raw GCS MAVLink.
-                    if not vcp_is_pc_mode:
-                        raw_vcp_in_buf.append(b)
+                    vcp_mux_buf.append(b)
+                    success, chan, payload = pc_mux_parser.parse_byte(b)
+                    if success:
+                        last_pc_mux_vcp_ms = time.ticks_ms()
+                        vcp_is_pc_mode = True
+                        vcp_mux_buf.clear()
+                        if chan == CHAN_CONFIG:
+                            process_pc_command(payload)
+                        elif chan == CHAN_MAVLINK:
+                            uart1.write(mux_encode(CHAN_MAVLINK, payload))
+                    elif pc_mux_parser.state == 0:
+                        raw_vcp_in_buf.extend(vcp_mux_buf)
+                        vcp_mux_buf.clear()
 
             if len(raw_vcp_in_buf) > 0:
                 # Forward raw GCS MAVLink bytes to Board 2 inside CHAN_MAVLINK chunks
@@ -1047,22 +1083,33 @@ def main():
         # 5. Non-blocking high-speed CH340 Soft-UART polling
         ch340_data = pio_read_ch340()
         if ch340_data:
-            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
+            last_ch340_mux_byte_ms = now
+            ch340_is_pc_mode = (time.ticks_diff(now, last_pc_mux_ch340_ms) < 5000)
             raw_ch340_in_buf = bytearray()
 
             for b in ch340_data:
-                if pc_mux_parser_ch340.state > 0 or b == SYNC1:
+                if ch340_is_pc_mode:
                     success, chan, payload = pc_mux_parser_ch340.parse_byte(b)
                     if success:
                         last_pc_mux_ch340_ms = time.ticks_ms()
-                        ch340_is_pc_mode = True
                         if chan == CHAN_CONFIG:
                             process_pc_command(payload)
                         elif chan == CHAN_MAVLINK:
                             uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
-                    if not ch340_is_pc_mode:
-                        raw_ch340_in_buf.append(b)
+                    ch340_mux_buf.append(b)
+                    success, chan, payload = pc_mux_parser_ch340.parse_byte(b)
+                    if success:
+                        last_pc_mux_ch340_ms = time.ticks_ms()
+                        ch340_is_pc_mode = True
+                        ch340_mux_buf.clear()
+                        if chan == CHAN_CONFIG:
+                            process_pc_command(payload)
+                        elif chan == CHAN_MAVLINK:
+                            uart1.write(mux_encode(CHAN_MAVLINK, payload))
+                    elif pc_mux_parser_ch340.state == 0:
+                        raw_ch340_in_buf.extend(ch340_mux_buf)
+                        ch340_mux_buf.clear()
 
             if len(raw_ch340_in_buf) > 0:
                 # Forward raw GCS MAVLink bytes to Board 2 inside CHAN_MAVLINK chunks
