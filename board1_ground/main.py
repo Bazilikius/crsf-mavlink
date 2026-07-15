@@ -7,6 +7,9 @@ import uselect as select
 import time
 import micropython
 
+# 2-second safety delay to allow IDE connection and interruption (prevents "board busy" lockups on auto launch)
+time.sleep(2)
+
 # Disable REPL keyboard interrupts to allow 100% binary-safe USB serial data streaming!
 micropython.kbd_intr(-1)
 
@@ -966,6 +969,9 @@ def main():
                     chunk = raw_vcp_in_buf[i:i+255]
                     uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                     i += 255
+
+        # Yield CPU slightly to keep the board running cool and prevent tight-loop starvation
+        time.sleep_ms(1)
 
 if __name__ == '__main__':
     main()

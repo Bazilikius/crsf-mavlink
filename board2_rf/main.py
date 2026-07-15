@@ -4,9 +4,10 @@ import sys
 import rp2
 import select
 import micropython
+import time
 
-# Disable REPL keyboard interrupts to allow 100% binary-safe serial streaming!
-micropython.kbd_intr(-1)
+# 2-second safety delay to allow IDE connection and interruption (prevents "board busy" lockups on auto launch)
+time.sleep(2)
 
 # --- Shared Multiplexer Protocol (Embedded for Self-Containment) ---
 SYNC1 = 0xAA
@@ -108,8 +109,8 @@ active_mode = MODE_SIMULTANEOUS
 mux_parser = MuxParser()
 
 # --- Hardware Initializations ---
-# 1. UART1 for Board 1 link (Baud 460800)
-uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX))
+# 1. UART1 for Board 1 link (Baud 460800, with 4KB buffer to prevent overflow)
+uart1 = machine.UART(1, baudrate=460800, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX), rxbuf=4096)
 
 # 2. Power Enable PWMs (for standard RC switches: 2000us is ON, 1000us is OFF)
 pwm_pwr1 = machine.PWM(machine.Pin(PIN_JR1_PWR))
@@ -324,6 +325,9 @@ def main():
             p_data = pio_read_jr2()
             if p_data:
                 uart1.write(mux_encode(CHAN_CRSF, p_data))
+
+        # Yield CPU slightly to keep the board running cool and prevent tight-loop starvation
+        time.sleep_ms(1)
 
 if __name__ == '__main__':
     main()

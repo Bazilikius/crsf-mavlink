@@ -394,7 +394,14 @@ class ConfiguratorApp:
             self.uav_marker.set_position(lat, lon)
         else:
             # Use 10px circular icon programmatically generated to satisfy "reduce the antenna markers to 10 pixels"
-            self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position", icon=self.uav_dot_img)
+            # Cascading fallback for tkintermapview version compatibility (handles both icon and image arguments)
+            try:
+                self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position", icon=self.uav_dot_img)
+            except TypeError:
+                try:
+                    self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position", image=self.uav_dot_img)
+                except Exception:
+                    self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position")
             self.map_view.set_position(lat, lon)
 
         self.last_known_uav_pos = (lat, lon)
@@ -852,7 +859,14 @@ class ConfiguratorApp:
                 self.home_marker.set_position(lat, lon)
             else:
                 # Use 10px circular icon programmatically generated to satisfy "reduce the antenna markers to 10 pixels"
-                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", icon=self.gs_dot_img)
+                # Cascading fallback for tkintermapview version compatibility (handles both icon and image arguments)
+                try:
+                    self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", icon=self.gs_dot_img)
+                except TypeError:
+                    try:
+                        self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", image=self.gs_dot_img)
+                    except Exception:
+                        self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station")
             self.last_known_home_pos = (lat, lon)
         else:
             self.log("Failed to send Home position configuration.")
@@ -1011,7 +1025,14 @@ class ConfiguratorApp:
                 self.home_marker.set_position(lat, lon)
             else:
                 # Use 10px circular icon programmatically generated to satisfy "reduce the antenna markers to 10 pixels"
-                self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", icon=self.gs_dot_img)
+                # Cascading fallback for tkintermapview version compatibility (handles both icon and image arguments)
+                try:
+                    self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", icon=self.gs_dot_img)
+                except TypeError:
+                    try:
+                        self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station", image=self.gs_dot_img)
+                    except Exception:
+                        self.home_marker = self.map_view.set_marker(lat, lon, text="Ground Station")
 
             if is_new_home:
                 self.map_view.set_position(lat, lon)
