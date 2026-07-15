@@ -131,7 +131,7 @@ try:
 except Exception:
     _usb = None
 
-def write_stdout_bytes(data):
+def write_stdout_vcp_only(data):
     if _usb is not None:
         try:
             _usb.write(data)
@@ -142,6 +142,9 @@ def write_stdout_bytes(data):
             sys.stdout.buffer.write(data)
         except Exception:
             pass
+
+def write_stdout_bytes(data):
+    write_stdout_vcp_only(data)
     try:
         pio_write_ch340(data)
     except Exception:
@@ -247,11 +250,13 @@ class SystemConfig:
 config = SystemConfig()
 mux_parser = MuxParser()
 pc_mux_parser = MuxParser()
+pc_mux_parser_ch340 = MuxParser()
 
 # Connection status tracking
 last_rf_board_msg_ms = 0
 last_mav_msg_ms = 0
-last_pc_mux_msg_ms = 0
+last_pc_mux_vcp_ms = 0
+last_pc_mux_ch340_ms = 0
 
 # --- Hardware Initializations ---
 # Initialize CH340 Soft-UART State Machines using PIO
@@ -606,10 +611,15 @@ mav_parser = MavlinkParser()
 
 # --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
-    # Only transmit config status to PC if PC Configurator is active
-    global last_pc_mux_msg_ms
-    if time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) >= 5000:
+    # Only transmit config status if at least one PC interface is active
+    global last_pc_mux_vcp_ms, last_pc_mux_ch340_ms
+    now = time.ticks_ms()
+    vcp_active = time.ticks_diff(now, last_pc_mux_vcp_ms) < 5000
+    ch340_active = time.ticks_diff(now, last_pc_mux_ch340_ms) < 5000
+
+    if not vcp_active and not ch340_active:
         return
+
     # Build the 68-byte payload
     payload = bytearray([
         config.system_mode,
@@ -672,7 +682,10 @@ def send_config_to_pc():
     payload.append(mavlink_active)
 
     packet = mux_encode(CHAN_CONFIG, payload)
-    write_stdout_bytes(packet)
+    if vcp_active:
+        write_stdout_vcp_only(packet)
+    if ch340_active:
+        pio_write_ch340(packet)
 
 def process_pc_command(payload):
     if not payload: return
@@ -892,7 +905,7 @@ def main():
     else:
         poll.register(sys.stdin, select.POLLIN)
 
-    global last_rf_board_msg_ms, last_mav_msg_ms, last_pc_mux_msg_ms
+    global last_rf_board_msg_ms, last_mav_msg_ms, last_pc_mux_vcp_ms, last_pc_mux_ch340_ms
 
     while True:
         now = time.ticks_ms()
@@ -932,22 +945,32 @@ def main():
                         if chan == CHAN_MAVLINK:
                             last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
 
-                            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
-                            if is_pc_mode:
-                                # Send multiplexed MAVLink to PC Configurator
-                                enc_val = mux_encode(CHAN_MAVLINK, payload)
-                                write_stdout_bytes(enc_val)
+                            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
+                            if vcp_is_pc_mode:
+                                # Send multiplexed MAVLink to PC Configurator VCP
+                                write_stdout_vcp_only(mux_encode(CHAN_MAVLINK, payload))
                             else:
-                                # Send RAW MAVLink to direct GCS (Mission Planner/QGC)
-                                write_stdout_bytes(payload)
+                                # Send RAW MAVLink to direct GCS VCP (Mission Planner/QGC)
+                                write_stdout_vcp_only(payload)
+
+                            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
+                            if ch340_is_pc_mode:
+                                # Send multiplexed MAVLink to CH340
+                                pio_write_ch340(mux_encode(CHAN_MAVLINK, payload))
+                            else:
+                                # Send RAW MAVLink to CH340
+                                pio_write_ch340(payload)
 
                             for byte in payload:
                                 mav_parser.parse_byte(byte)
                         elif chan == CHAN_CRSF:
-                            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
-                            if is_pc_mode:
-                                enc_val = mux_encode(CHAN_CRSF, payload)
-                                write_stdout_bytes(enc_val)
+                            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
+                            if vcp_is_pc_mode:
+                                write_stdout_vcp_only(mux_encode(CHAN_CRSF, payload))
+
+                            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
+                            if ch340_is_pc_mode:
+                                pio_write_ch340(mux_encode(CHAN_CRSF, payload))
 
                             # Write received CRSF back to TX16S
                             try:
@@ -993,7 +1016,7 @@ def main():
                 vcp_data = stdin_bytes
 
         if vcp_data:
-            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
+            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
             raw_vcp_in_buf = bytearray()
 
             for b in vcp_data:
@@ -1002,15 +1025,15 @@ def main():
                 if pc_mux_parser.state > 0 or b == SYNC1:
                     success, chan, payload = pc_mux_parser.parse_byte(b)
                     if success:
-                        last_pc_mux_msg_ms = time.ticks_ms()
-                        is_pc_mode = True
+                        last_pc_mux_vcp_ms = time.ticks_ms()
+                        vcp_is_pc_mode = True
                         if chan == CHAN_CONFIG:
                             process_pc_command(payload)
                         elif chan == CHAN_MAVLINK:
                             uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
                     # Not a multiplexer frame byte. Treat as raw GCS MAVLink.
-                    if not is_pc_mode:
+                    if not vcp_is_pc_mode:
                         raw_vcp_in_buf.append(b)
 
             if len(raw_vcp_in_buf) > 0:
@@ -1024,21 +1047,21 @@ def main():
         # 5. Non-blocking high-speed CH340 Soft-UART polling
         ch340_data = pio_read_ch340()
         if ch340_data:
-            is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_msg_ms) < 5000)
+            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
             raw_ch340_in_buf = bytearray()
 
             for b in ch340_data:
-                if pc_mux_parser.state > 0 or b == SYNC1:
-                    success, chan, payload = pc_mux_parser.parse_byte(b)
+                if pc_mux_parser_ch340.state > 0 or b == SYNC1:
+                    success, chan, payload = pc_mux_parser_ch340.parse_byte(b)
                     if success:
-                        last_pc_mux_msg_ms = time.ticks_ms()
-                        is_pc_mode = True
+                        last_pc_mux_ch340_ms = time.ticks_ms()
+                        ch340_is_pc_mode = True
                         if chan == CHAN_CONFIG:
                             process_pc_command(payload)
                         elif chan == CHAN_MAVLINK:
                             uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
-                    if not is_pc_mode:
+                    if not ch340_is_pc_mode:
                         raw_ch340_in_buf.append(b)
 
             if len(raw_ch340_in_buf) > 0:

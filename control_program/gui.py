@@ -518,7 +518,15 @@ class ConfiguratorApp:
         ttk.Label(mav_frame, text="MAVP2P Binary Path:").grid(row=4, column=0, sticky="e", padx=15, pady=5)
         ttk.Entry(mav_frame, textvariable=self.mav_bin_path_var, width=25).grid(row=4, column=1, sticky="w", padx=15, pady=5)
 
-        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=5, column=0, columnspan=2, pady=12)
+        ttk.Label(mav_frame, text="MAVP2P COM Port:").grid(row=5, column=0, sticky="e", padx=15, pady=5)
+        self.combo_mav_port = ttk.Combobox(mav_frame, textvariable=self.mav_serial_port_var, values=self.conn.list_ports(), width=22)
+        self.combo_mav_port.grid(row=5, column=1, sticky="w", padx=15, pady=5)
+
+        ttk.Label(mav_frame, text="MAVP2P COM Baudrate:").grid(row=6, column=0, sticky="e", padx=15, pady=5)
+        self.combo_mav_baud = ttk.Combobox(mav_frame, textvariable=self.mav_serial_baud_var, values=baud_opts, width=12)
+        self.combo_mav_baud.grid(row=6, column=1, sticky="w", padx=15, pady=5)
+
+        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=7, column=0, columnspan=2, pady=12)
 
     def setup_tracker_tab(self, parent):
         lbl_home_head = ttk.Label(parent, text="Antenna Tracker Home Coordinates", style="Header.TLabel")
@@ -1155,6 +1163,8 @@ class ConfiguratorApp:
         self.mav_in_port_var = tk.StringVar(value="14445")
         self.mav_out_port_var = tk.StringVar(value="14446")
         self.mav_bin_path_var = tk.StringVar(value="mavp2p")
+        self.mav_serial_port_var = tk.StringVar(value="COM50")
+        self.mav_serial_baud_var = tk.StringVar(value="115200")
 
         if os.path.exists("mavp2p_config.json"):
             try:
@@ -1165,6 +1175,8 @@ class ConfiguratorApp:
                     self.mav_in_port_var.set(str(cfg.get("in_port", "14445")))
                     self.mav_out_port_var.set(str(cfg.get("out_port", "14446")))
                     self.mav_bin_path_var.set(cfg.get("bin_path", "mavp2p"))
+                    self.mav_serial_port_var.set(cfg.get("serial_port", "COM50"))
+                    self.mav_serial_baud_var.set(str(cfg.get("serial_baud", "115200")))
             except Exception:
                 pass
 
@@ -1175,7 +1187,9 @@ class ConfiguratorApp:
             "gcs_port": self.mav_gcs_port_var.get(),
             "in_port": self.mav_in_port_var.get(),
             "out_port": self.mav_out_port_var.get(),
-            "bin_path": self.mav_bin_path_var.get()
+            "bin_path": self.mav_bin_path_var.get(),
+            "serial_port": self.mav_serial_port_var.get(),
+            "serial_baud": self.mav_serial_baud_var.get()
         }
         try:
             with open("mavp2p_config.json", "w") as f:
@@ -1195,6 +1209,8 @@ class ConfiguratorApp:
         port_gcs = self.mav_gcs_port_var.get()
         port_in = self.mav_in_port_var.get()
         port_out = self.mav_out_port_var.get()
+        serial_port = self.mav_serial_port_var.get()
+        serial_baud = self.mav_serial_baud_var.get()
 
         # Sync with serial connection proxy definitions
         try:
@@ -1204,11 +1220,12 @@ class ConfiguratorApp:
         except Exception:
             pass
 
+        # Matches user's exact bat script: mavp2p.exe udps:127.0.0.1:14446 udpc:127.0.0.1:14445 serial:%serial_port%
         cmd = [
             bin_path,
+            f"udps:127.0.0.1:{port_out}",
             f"udpc:127.0.0.1:{port_in}",
-            f"udps:127.0.0.1:{port_gcs}",
-            f"udps:127.0.0.1:{port_out}"
+            f"serial:{serial_port}:{serial_baud}"
         ]
 
         try:
