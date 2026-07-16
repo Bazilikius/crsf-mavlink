@@ -184,6 +184,9 @@ class SerialConnection:
         self.tcp_clients = []
         self.tcp_clients_lock = threading.Lock()
 
+        # Dedicated socket for outgoing telemetry to prevent port conflicts
+        self.udp_send_sock = None
+
         # Parse state
         self.usb_mux_parser = MuxParser()
         self.local_mav_parser = PythonMavlinkParser(on_gps_cb=self._on_drone_gps_parsed)
@@ -211,6 +214,12 @@ class SerialConnection:
             # Start Background Read Thread
             self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
             self.read_thread.start()
+
+            # Create a dedicated socket for outgoing MAVLink telemetry
+            try:
+                self.udp_send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            except Exception as e:
+                self.log(f"Warning: Could not create outgoing UDP socket: {e}")
 
             # Try to bind the MAVLink UDP Proxy Socket
             try:
@@ -336,6 +345,13 @@ class SerialConnection:
         self.udp_sock_14556 = None
         self.udp_client_addr_14556 = None
 
+        if self.udp_send_sock:
+            try:
+                self.udp_send_sock.close()
+            except Exception:
+                pass
+        self.udp_send_sock = None
+
         if self.tcp_sock:
             self.tcp_sock.close()
         self.tcp_sock = None
@@ -442,33 +458,33 @@ class SerialConnection:
                                     for byte in payload:
                                         self.local_mav_parser.parse_byte(byte)
 
-                                    # 1. Forward to primary UDP port client (Standard 14550)
-                                    if self.udp_sock and self.udp_client_addr:
+                                    # Forward MAVLink over dedicated send socket to prevent binding/listening port conflicts on PC
+                                    if self.udp_send_sock:
+                                        # 1. Send to standard local GCS receiver port 14550
                                         try:
-                                            self.udp_sock.sendto(payload, self.udp_client_addr)
+                                            target_14550 = self.udp_client_addr or ('127.0.0.1', self.udp_port)
+                                            self.udp_send_sock.sendto(payload, target_14550)
                                         except Exception:
                                             pass
 
-                                    # 2. Forward to secondary UDP transmit port (Port 2228)
+                                        # 2. Send to custom program port (default 14555)
+                                        try:
+                                            target_14555 = self.udp_client_addr_custom or ('127.0.0.1', self.udp_port_custom)
+                                            self.udp_send_sock.sendto(payload, target_14555)
+                                        except Exception:
+                                            pass
+
+                                        # 3. Send to dedicated GCS/Custom port (default 14556)
+                                        try:
+                                            target_14556 = self.udp_client_addr_14556 or ('127.0.0.1', self.udp_port_14556)
+                                            self.udp_send_sock.sendto(payload, target_14556)
+                                        except Exception:
+                                            pass
+
+                                    # Forward over secondary and specialized UDP proxy listeners
                                     if self.udp_sock_sec:
                                         try:
                                             self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
-                                        except Exception:
-                                            pass
-
-                                    # 3. Forward to custom program UDP client
-                                    if self.udp_sock_custom and self.udp_client_addr_custom:
-                                        try:
-                                            self.udp_sock_custom.sendto(payload, self.udp_client_addr_custom)
-                                        except Exception:
-                                            pass
-
-                                    # 4. Forward to dedicated UDP port 14556
-                                    if self.udp_sock_14556:
-                                        try:
-                                            # Send to active sender if we have one, otherwise broadcast/send to 127.0.0.1:self.udp_port_14556
-                                            target = self.udp_client_addr_14556 or ('127.0.0.1', self.udp_port_14556)
-                                            self.udp_sock_14556.sendto(payload, target)
                                         except Exception:
                                             pass
 

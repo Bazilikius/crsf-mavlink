@@ -417,6 +417,11 @@ class ConfiguratorApp:
                     self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position", image=self.uav_dot_img)
                 except Exception:
                     self.uav_marker = self.map_view.set_marker(lat, lon, text="Drone Position")
+
+            if self.map_follow_drone_var.get():
+                self.map_view.set_position(lat, lon)
+
+        if self.map_follow_drone_var.get():
             self.map_view.set_position(lat, lon)
 
         self.last_known_uav_pos = (lat, lon)
@@ -633,6 +638,12 @@ class ConfiguratorApp:
             map_hdr_frame, text="Manual", variable=self.tracking_mode_var, value="manual", command=self.on_tracking_mode_changed
         )
         self.rb_manual.pack(side="left", padx=5)
+
+        self.map_follow_drone_var = tk.BooleanVar(value=True)
+        self.chk_follow_drone = ttk.Checkbutton(
+            map_hdr_frame, text="Map Follows Drone", variable=self.map_follow_drone_var
+        )
+        self.chk_follow_drone.pack(side="left", padx=10)
 
         self.btn_cal_set = ttk.Button(
             map_hdr_frame, text="Calibrate AZ (Set Cur)", command=self.on_calibrate_azimuth_zero, style="TButton"
