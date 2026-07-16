@@ -171,6 +171,12 @@ class SerialConnection:
         self.udp_client_addr_custom = None
         self.udp_port_custom = 14555  # Default custom program port
 
+        # Dedicated MAVLink UDP 14556 Port Settings
+        self.udp_sock_14556 = None
+        self.udp_thread_14556 = None
+        self.udp_client_addr_14556 = None
+        self.udp_port_14556 = 14556
+
         # Parse state
         self.usb_mux_parser = MuxParser()
         self.local_mav_parser = PythonMavlinkParser(on_gps_cb=self._on_drone_gps_parsed)
@@ -246,6 +252,21 @@ class SerialConnection:
                 self.udp_thread_custom = None
                 self.log(f"Warning: Could not bind custom program MAVLink UDP port {self.udp_port_custom} ({e}).")
 
+            # Try to bind the dedicated MAVLink UDP Port 14556
+            try:
+                self.udp_sock_14556 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock_14556.bind(('127.0.0.1', self.udp_port_14556))
+                self.udp_sock_14556.settimeout(0.1)
+
+                # Start background thread to read from 14556
+                self.udp_thread_14556 = threading.Thread(target=self._udp_loop_14556, daemon=True)
+                self.udp_thread_14556.start()
+                self.log(f"Dedicated MAVLink UDP 14556 proxy server successfully started on port {self.udp_port_14556}.")
+            except OSError as e:
+                self.udp_sock_14556 = None
+                self.udp_thread_14556 = None
+                self.log(f"Warning: Could not bind dedicated MAVLink UDP 14556 port {self.udp_port_14556} ({e}).")
+
             return True
         except Exception as e:
             self.log(f"Error connecting to serial port: {e}")
@@ -262,6 +283,8 @@ class SerialConnection:
             self.udp_thread_sec.join(timeout=1.0)
         if self.udp_thread_custom:
             self.udp_thread_custom.join(timeout=1.0)
+        if self.udp_thread_14556:
+            self.udp_thread_14556.join(timeout=1.0)
 
         if self.ser and self.ser.is_open:
             self.ser.close()
@@ -281,6 +304,11 @@ class SerialConnection:
             self.udp_sock_custom.close()
         self.udp_sock_custom = None
         self.udp_client_addr_custom = None
+
+        if self.udp_sock_14556:
+            self.udp_sock_14556.close()
+        self.udp_sock_14556 = None
+        self.udp_client_addr_14556 = None
 
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
@@ -396,8 +424,44 @@ class SerialConnection:
                                             self.udp_sock_custom.sendto(payload, self.udp_client_addr_custom)
                                         except Exception:
                                             pass
+
+                                    # 4. Forward to dedicated UDP port 14556
+                                    if self.udp_sock_14556:
+                                        try:
+                                            # Send to active sender if we have one, otherwise broadcast/send to 127.0.0.1:14556
+                                            target = self.udp_client_addr_14556 or ('127.0.0.1', 14556)
+                                            self.udp_sock_14556.sendto(payload, target)
+                                        except Exception:
+                                            pass
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
+                    time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _udp_loop_14556(self):
+        while self.running:
+            if self.udp_sock_14556:
+                try:
+                    data, addr = self.udp_sock_14556.recvfrom(2048)
+                    if data:
+                        self.udp_client_addr_14556 = addr
+                        if self.ser and self.ser.is_open:
+                            framed = mux_encode(CHAN_MAVLINK, data)
+                            self.ser.write(framed)
+                            self.ser.flush()
+                except socket.timeout:
+                    pass
+                except ConnectionResetError:
+                    pass
+                except OSError as e:
+                    if getattr(e, 'winerror', 0) == 10054:
+                        pass
+                    else:
+                        self.log(f"Error in UDP 14556 proxy thread: {e}")
+                        time.sleep(0.1)
+                except Exception as e:
+                    self.log(f"Error in UDP 14556 proxy thread: {e}")
                     time.sleep(0.1)
             else:
                 time.sleep(0.1)
