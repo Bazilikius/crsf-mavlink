@@ -301,6 +301,7 @@ class ConfiguratorApp:
                 self.conn.udp_port = int(self.mav_gcs_port_var.get())
                 self.conn.udp_port_sec = int(self.mav_in_port_var.get())
                 self.conn.udp_tx_port_sec = int(self.mav_out_port_var.get())
+                self.conn.udp_port_custom = int(self.mav_custom_port_var.get())
             except Exception:
                 pass
 
@@ -515,18 +516,21 @@ class ConfiguratorApp:
         ttk.Label(mav_frame, text="MAVP2P Out Port (e.g. 14446):").grid(row=3, column=0, sticky="e", padx=15, pady=5)
         ttk.Entry(mav_frame, textvariable=self.mav_out_port_var, width=15).grid(row=3, column=1, sticky="w", padx=15, pady=5)
 
-        ttk.Label(mav_frame, text="MAVP2P Binary Path:").grid(row=4, column=0, sticky="e", padx=15, pady=5)
-        ttk.Entry(mav_frame, textvariable=self.mav_bin_path_var, width=25).grid(row=4, column=1, sticky="w", padx=15, pady=5)
+        ttk.Label(mav_frame, text="Custom Program UDP Port (e.g. 14555):").grid(row=4, column=0, sticky="e", padx=15, pady=5)
+        ttk.Entry(mav_frame, textvariable=self.mav_custom_port_var, width=15).grid(row=4, column=1, sticky="w", padx=15, pady=5)
 
-        ttk.Label(mav_frame, text="MAVP2P COM Port:").grid(row=5, column=0, sticky="e", padx=15, pady=5)
+        ttk.Label(mav_frame, text="MAVP2P Binary Path:").grid(row=5, column=0, sticky="e", padx=15, pady=5)
+        ttk.Entry(mav_frame, textvariable=self.mav_bin_path_var, width=25).grid(row=5, column=1, sticky="w", padx=15, pady=5)
+
+        ttk.Label(mav_frame, text="MAVP2P COM Port:").grid(row=6, column=0, sticky="e", padx=15, pady=5)
         self.combo_mav_port = ttk.Combobox(mav_frame, textvariable=self.mav_serial_port_var, values=self.conn.list_ports(), width=22)
-        self.combo_mav_port.grid(row=5, column=1, sticky="w", padx=15, pady=5)
+        self.combo_mav_port.grid(row=6, column=1, sticky="w", padx=15, pady=5)
 
-        ttk.Label(mav_frame, text="MAVP2P COM Baudrate:").grid(row=6, column=0, sticky="e", padx=15, pady=5)
+        ttk.Label(mav_frame, text="MAVP2P COM Baudrate:").grid(row=7, column=0, sticky="e", padx=15, pady=5)
         self.combo_mav_baud = ttk.Combobox(mav_frame, textvariable=self.mav_serial_baud_var, values=baud_opts, width=12)
-        self.combo_mav_baud.grid(row=6, column=1, sticky="w", padx=15, pady=5)
+        self.combo_mav_baud.grid(row=7, column=1, sticky="w", padx=15, pady=5)
 
-        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=7, column=0, columnspan=2, pady=12)
+        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=8, column=0, columnspan=2, pady=12)
 
     def setup_tracker_tab(self, parent):
         lbl_home_head = ttk.Label(parent, text="Antenna Tracker Home Coordinates", style="Header.TLabel")
@@ -1162,6 +1166,7 @@ class ConfiguratorApp:
         self.mav_gcs_port_var = tk.StringVar(value="14550")
         self.mav_in_port_var = tk.StringVar(value="14445")
         self.mav_out_port_var = tk.StringVar(value="14446")
+        self.mav_custom_port_var = tk.StringVar(value="14555")
         self.mav_bin_path_var = tk.StringVar(value="mavp2p")
         self.mav_serial_port_var = tk.StringVar(value="COM50")
         self.mav_serial_baud_var = tk.StringVar(value="115200")
@@ -1174,6 +1179,7 @@ class ConfiguratorApp:
                     self.mav_gcs_port_var.set(str(cfg.get("gcs_port", "14550")))
                     self.mav_in_port_var.set(str(cfg.get("in_port", "14445")))
                     self.mav_out_port_var.set(str(cfg.get("out_port", "14446")))
+                    self.mav_custom_port_var.set(str(cfg.get("custom_port", "14555")))
                     self.mav_bin_path_var.set(cfg.get("bin_path", "mavp2p"))
                     self.mav_serial_port_var.set(cfg.get("serial_port", "COM50"))
                     self.mav_serial_baud_var.set(str(cfg.get("serial_baud", "115200")))
@@ -1187,6 +1193,7 @@ class ConfiguratorApp:
             "gcs_port": self.mav_gcs_port_var.get(),
             "in_port": self.mav_in_port_var.get(),
             "out_port": self.mav_out_port_var.get(),
+            "custom_port": self.mav_custom_port_var.get(),
             "bin_path": self.mav_bin_path_var.get(),
             "serial_port": self.mav_serial_port_var.get(),
             "serial_baud": self.mav_serial_baud_var.get()
@@ -1217,6 +1224,7 @@ class ConfiguratorApp:
             self.conn.udp_port = int(port_gcs)
             self.conn.udp_port_sec = int(port_in)
             self.conn.udp_tx_port_sec = int(port_out)
+            self.conn.udp_port_custom = int(self.mav_custom_port_var.get())
         except Exception:
             pass
 

@@ -165,6 +165,12 @@ class SerialConnection:
         self.udp_port_sec = 14445  # Receives UDP from MAVP2P udps:127.0.0.1:14445
         self.udp_tx_port_sec = 14446  # Transmits UDP to MAVP2P udpc:127.0.0.1:14446
 
+        # Third MAVLink UDP Proxy Settings (for custom program)
+        self.udp_sock_custom = None
+        self.udp_thread_custom = None
+        self.udp_client_addr_custom = None
+        self.udp_port_custom = 14555  # Default custom program port
+
         # Parse state
         self.usb_mux_parser = MuxParser()
         self.local_mav_parser = PythonMavlinkParser(on_gps_cb=self._on_drone_gps_parsed)
@@ -225,6 +231,21 @@ class SerialConnection:
                 self.udp_thread_sec = None
                 self.log(f"Warning: Could not bind secondary MAVLink UDP port {self.udp_port_sec} ({e}).")
 
+            # Try to bind the custom program MAVLink UDP Port
+            try:
+                self.udp_sock_custom = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock_custom.bind(('127.0.0.1', self.udp_port_custom))
+                self.udp_sock_custom.settimeout(0.1)
+
+                # Start background thread to read from custom port
+                self.udp_thread_custom = threading.Thread(target=self._udp_loop_custom, daemon=True)
+                self.udp_thread_custom.start()
+                self.log(f"Custom Program MAVLink UDP proxy server successfully started on port {self.udp_port_custom}.")
+            except OSError as e:
+                self.udp_sock_custom = None
+                self.udp_thread_custom = None
+                self.log(f"Warning: Could not bind custom program MAVLink UDP port {self.udp_port_custom} ({e}).")
+
             return True
         except Exception as e:
             self.log(f"Error connecting to serial port: {e}")
@@ -239,6 +260,8 @@ class SerialConnection:
             self.udp_thread.join(timeout=1.0)
         if self.udp_thread_sec:
             self.udp_thread_sec.join(timeout=1.0)
+        if self.udp_thread_custom:
+            self.udp_thread_custom.join(timeout=1.0)
 
         if self.ser and self.ser.is_open:
             self.ser.close()
@@ -253,6 +276,11 @@ class SerialConnection:
             self.udp_sock_sec.close()
         self.udp_sock_sec = None
         self.udp_client_addr_sec = None
+
+        if self.udp_sock_custom:
+            self.udp_sock_custom.close()
+        self.udp_sock_custom = None
+        self.udp_client_addr_custom = None
 
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
@@ -361,8 +389,43 @@ class SerialConnection:
                                             self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
                                         except Exception:
                                             pass
+
+                                    # 3. Forward to custom program UDP client
+                                    if self.udp_sock_custom and self.udp_client_addr_custom:
+                                        try:
+                                            self.udp_sock_custom.sendto(payload, self.udp_client_addr_custom)
+                                        except Exception:
+                                            pass
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
+                    time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _udp_loop_custom(self):
+        while self.running:
+            if self.udp_sock_custom:
+                try:
+                    data, addr = self.udp_sock_custom.recvfrom(2048)
+                    if data:
+                        self.udp_client_addr_custom = addr
+                        if self.ser and self.ser.is_open:
+                            framed = mux_encode(CHAN_MAVLINK, data)
+                            self.ser.write(framed)
+                            self.ser.flush()
+                except socket.timeout:
+                    pass
+                except ConnectionResetError:
+                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
+                    pass
+                except OSError as e:
+                    if getattr(e, 'winerror', 0) == 10054:
+                        pass
+                    else:
+                        self.log(f"Error in custom program UDP proxy thread: {e}")
+                        time.sleep(0.1)
+                except Exception as e:
+                    self.log(f"Error in custom program UDP proxy thread: {e}")
                     time.sleep(0.1)
             else:
                 time.sleep(0.1)

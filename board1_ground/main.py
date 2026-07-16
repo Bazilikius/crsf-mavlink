@@ -262,7 +262,7 @@ last_pc_mux_ch340_ms = 0
 # --- Hardware Initializations ---
 # Initialize CH340 Soft-UART State Machines using PIO
 try:
-    sm_ch340_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, set_base=machine.Pin(PIN_CH340_TX), out_base=machine.Pin(PIN_CH340_TX))
+    sm_ch340_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, set=machine.Pin(PIN_CH340_TX), out_init=machine.Pin(PIN_CH340_TX))
     sm_ch340_rx = rp2.StateMachine(1, pio_uart_rx, freq=115200 * 8, in_base=machine.Pin(PIN_CH340_RX, machine.Pin.IN, machine.Pin.PULL_UP))
     sm_ch340_tx.active(1)
     sm_ch340_rx.active(1)
