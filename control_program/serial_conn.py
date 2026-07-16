@@ -528,8 +528,11 @@ class SerialConnection:
                     self.ser.flush()
             except socket.timeout:
                 pass
-            except Exception:
-                break
+            except Exception as e:
+                if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
+                    pass
+                else:
+                    break
 
         # Cleanup client
         try:
@@ -556,13 +559,13 @@ class SerialConnection:
                 except ConnectionResetError:
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                    if getattr(e, 'winerror', 0) == 10054 or any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in UDP 14556 proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if "timed out" in str(e).lower():
+                    if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in UDP 14556 proxy thread: {e}")
@@ -587,13 +590,13 @@ class SerialConnection:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                    if getattr(e, 'winerror', 0) == 10054 or any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in custom program UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if "timed out" in str(e).lower():
+                    if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in custom program UDP proxy thread: {e}")
@@ -618,13 +621,13 @@ class SerialConnection:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                    if getattr(e, 'winerror', 0) == 10054 or any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in secondary UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if "timed out" in str(e).lower():
+                    if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in secondary UDP proxy thread: {e}")
@@ -649,13 +652,13 @@ class SerialConnection:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                    if getattr(e, 'winerror', 0) == 10054 or any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if "timed out" in str(e).lower():
+                    if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
                         pass
                     else:
                         self.log(f"Error in UDP proxy thread: {e}")
