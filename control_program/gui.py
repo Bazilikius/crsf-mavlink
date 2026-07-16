@@ -312,6 +312,8 @@ class ConfiguratorApp:
                 self.lbl_status.config(text="Connected", foreground='green')
                 self.log(f"Successfully connected to {port}.")
                 self.root.after(200, self.conn.request_config_read)
+                # Start periodic PC presence heartbeat to keep Board 1 in PC_MULTIPLEXED mode
+                self.root.after(2000, self._periodic_heartbeat)
                 # Automatically start background MAVP2P process if enabled
                 self.start_mavp2p_process()
             else:
@@ -1288,6 +1290,13 @@ class ConfiguratorApp:
                 except Exception:
                     pass
             self.mav_process = None
+
+    def _periodic_heartbeat(self):
+        if hasattr(self, 'conn') and self.conn and self.conn.running:
+            # Silently request config status. This serves as a "PC Configurator Present" heartbeat
+            # to prevent Board 1's 5-second GCS Raw fallback from triggering.
+            self.conn.request_config_read()
+            self.root.after(2000, self._periodic_heartbeat)
 
     def on_closing(self):
         self.stop_mavp2p_process()

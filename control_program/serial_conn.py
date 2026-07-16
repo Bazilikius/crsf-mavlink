@@ -187,6 +187,9 @@ class SerialConnection:
         # Dedicated socket for outgoing telemetry to prevent port conflicts
         self.udp_send_sock = None
 
+        # Mux and Raw mode detection state
+        self.last_pc_mux_packet_time = 0.0
+
         # Parse state
         self.usb_mux_parser = MuxParser()
         self.local_mav_parser = PythonMavlinkParser(on_gps_cb=self._on_drone_gps_parsed)
@@ -449,59 +452,106 @@ class SerialConnection:
                         data = self.ser.read(self.ser.in_waiting)
 
                         for b in data:
-                            success, chan, payload = self.usb_mux_parser.parse_byte(b)
-                            if success:
-                                if chan == CHAN_CONFIG:
-                                    self._parse_config_packet(payload)
-                                elif chan == CHAN_MAVLINK:
-                                    # Forward MAVLink packet bytes to the local visual map parser!
-                                    for byte in payload:
-                                        self.local_mav_parser.parse_byte(byte)
+                            is_pc_mode = (time.time() - self.last_pc_mux_packet_time) < 5.0
 
-                                    # Forward MAVLink over dedicated send socket to prevent binding/listening port conflicts on PC
-                                    if self.udp_send_sock:
-                                        # 1. Send to standard local GCS receiver port 14550
-                                        try:
-                                            target_14550 = self.udp_client_addr or ('127.0.0.1', self.udp_port)
-                                            self.udp_send_sock.sendto(payload, target_14550)
-                                        except Exception:
-                                            pass
+                            if is_pc_mode:
+                                # Standard PC Multiplexed Mode: parse bytes inside framed multiplexer channels
+                                success, chan, payload = self.usb_mux_parser.parse_byte(b)
+                                if success:
+                                    self.last_pc_mux_packet_time = time.time()
+                                    if chan == CHAN_CONFIG:
+                                        self._parse_config_packet(payload)
+                                    elif chan == CHAN_MAVLINK:
+                                        # Parse unpacked MAVLink packet bytes
+                                        for byte in payload:
+                                            self.local_mav_parser.parse_byte(byte)
 
-                                        # 2. Send to custom program port (default 14555)
-                                        try:
-                                            target_14555 = self.udp_client_addr_custom or ('127.0.0.1', self.udp_port_custom)
-                                            self.udp_send_sock.sendto(payload, target_14555)
-                                        except Exception:
-                                            pass
-
-                                        # 3. Send to dedicated GCS/Custom port (default 14556)
-                                        try:
-                                            target_14556 = self.udp_client_addr_14556 or ('127.0.0.1', self.udp_port_14556)
-                                            self.udp_send_sock.sendto(payload, target_14556)
-                                        except Exception:
-                                            pass
-
-                                    # Forward over secondary and specialized UDP proxy listeners
-                                    if self.udp_sock_sec:
-                                        try:
-                                            self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
-                                        except Exception:
-                                            pass
-
-                                    # 5. Forward to TCP Serial Emulation clients
-                                    with self.tcp_clients_lock:
-                                        dead_clients = []
-                                        for c_sock, _ in self.tcp_clients:
+                                        # Forward MAVLink over dedicated send socket
+                                        if self.udp_send_sock:
                                             try:
-                                                c_sock.sendall(payload)
-                                            except Exception:
-                                                dead_clients.append(c_sock)
-                                        for dead in dead_clients:
-                                            try:
-                                                dead.close()
+                                                target_14550 = self.udp_client_addr or ('127.0.0.1', self.udp_port)
+                                                self.udp_send_sock.sendto(payload, target_14550)
                                             except Exception:
                                                 pass
-                                            self.tcp_clients = [x for x in self.tcp_clients if x[0] != dead]
+                                            try:
+                                                target_14555 = self.udp_client_addr_custom or ('127.0.0.1', self.udp_port_custom)
+                                                self.udp_send_sock.sendto(payload, target_14555)
+                                            except Exception:
+                                                pass
+                                            try:
+                                                target_14556 = self.udp_client_addr_14556 or ('127.0.0.1', self.udp_port_14556)
+                                                self.udp_send_sock.sendto(payload, target_14556)
+                                            except Exception:
+                                                pass
+
+                                        if self.udp_sock_sec:
+                                            try:
+                                                self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+                                            except Exception:
+                                                pass
+
+                                        with self.tcp_clients_lock:
+                                            dead_clients = []
+                                            for c_sock, _ in self.tcp_clients:
+                                                try:
+                                                    c_sock.sendall(payload)
+                                                except Exception:
+                                                    dead_clients.append(c_sock)
+                                            for dead in dead_clients:
+                                                try:
+                                                    dead.close()
+                                                except Exception:
+                                                    pass
+                                                self.tcp_clients = [x for x in self.tcp_clients if x[0] != dead]
+                            else:
+                                # Raw/Fallback Mode: parse bytes directly as standard raw MAVLink
+                                self.local_mav_parser.parse_byte(b)
+
+                                # Send raw byte directly to UDP and TCP emulation GCS channels
+                                payload = bytes([b])
+                                if self.udp_send_sock:
+                                    try:
+                                        target_14550 = self.udp_client_addr or ('127.0.0.1', self.udp_port)
+                                        self.udp_send_sock.sendto(payload, target_14550)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        target_14555 = self.udp_client_addr_custom or ('127.0.0.1', self.udp_port_custom)
+                                        self.udp_send_sock.sendto(payload, target_14555)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        target_14556 = self.udp_client_addr_14556 or ('127.0.0.1', self.udp_port_14556)
+                                        self.udp_send_sock.sendto(payload, target_14556)
+                                    except Exception:
+                                        pass
+
+                                if self.udp_sock_sec:
+                                    try:
+                                        self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+                                    except Exception:
+                                        pass
+
+                                with self.tcp_clients_lock:
+                                    dead_clients = []
+                                    for c_sock, _ in self.tcp_clients:
+                                        try:
+                                            c_sock.sendall(payload)
+                                        except Exception:
+                                            dead_clients.append(c_sock)
+                                    for dead in dead_clients:
+                                        try:
+                                            dead.close()
+                                        except Exception:
+                                            pass
+                                        self.tcp_clients = [x for x in self.tcp_clients if x[0] != dead]
+
+                                # Also feed byte to the multiplexer parser in case a config/multiplexed channel comes in!
+                                success, chan, payload_mux = self.usb_mux_parser.parse_byte(b)
+                                if success:
+                                    self.last_pc_mux_packet_time = time.time()
+                                    if chan == CHAN_CONFIG:
+                                        self._parse_config_packet(payload_mux)
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)
