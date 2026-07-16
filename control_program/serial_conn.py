@@ -177,6 +177,13 @@ class SerialConnection:
         self.udp_client_addr_14556 = None
         self.udp_port_14556 = 14556
 
+        # TCP MAVLink Serial Emulation Server Settings
+        self.tcp_sock = None
+        self.tcp_thread = None
+        self.tcp_port = 5760  # Default GCS TCP port
+        self.tcp_clients = []
+        self.tcp_clients_lock = threading.Lock()
+
         # Parse state
         self.usb_mux_parser = MuxParser()
         self.local_mav_parser = PythonMavlinkParser(on_gps_cb=self._on_drone_gps_parsed)
@@ -267,6 +274,23 @@ class SerialConnection:
                 self.udp_thread_14556 = None
                 self.log(f"Warning: Could not bind dedicated MAVLink UDP 14556 port {self.udp_port_14556} ({e}).")
 
+            # Try to bind the TCP MAVLink Serial Emulation Server
+            try:
+                self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.tcp_sock.bind(('127.0.0.1', self.tcp_port))
+                self.tcp_sock.listen(5)
+                self.tcp_sock.settimeout(0.1)
+
+                # Start background thread to accept TCP connections
+                self.tcp_thread = threading.Thread(target=self._tcp_listen_loop, daemon=True)
+                self.tcp_thread.start()
+                self.log(f"TCP MAVLink Serial Emulation Server successfully started on port {self.tcp_port}.")
+            except OSError as e:
+                self.tcp_sock = None
+                self.tcp_thread = None
+                self.log(f"Warning: Could not bind TCP Serial Emulation port {self.tcp_port} ({e}).")
+
             return True
         except Exception as e:
             self.log(f"Error connecting to serial port: {e}")
@@ -285,6 +309,8 @@ class SerialConnection:
             self.udp_thread_custom.join(timeout=1.0)
         if self.udp_thread_14556:
             self.udp_thread_14556.join(timeout=1.0)
+        if self.tcp_thread:
+            self.tcp_thread.join(timeout=1.0)
 
         if self.ser and self.ser.is_open:
             self.ser.close()
@@ -309,6 +335,18 @@ class SerialConnection:
             self.udp_sock_14556.close()
         self.udp_sock_14556 = None
         self.udp_client_addr_14556 = None
+
+        if self.tcp_sock:
+            self.tcp_sock.close()
+        self.tcp_sock = None
+
+        with self.tcp_clients_lock:
+            for c_sock, _ in self.tcp_clients:
+                try:
+                    c_sock.close()
+                except Exception:
+                    pass
+            self.tcp_clients.clear()
 
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
@@ -428,16 +466,79 @@ class SerialConnection:
                                     # 4. Forward to dedicated UDP port 14556
                                     if self.udp_sock_14556:
                                         try:
-                                            # Send to active sender if we have one, otherwise broadcast/send to 127.0.0.1:14556
-                                            target = self.udp_client_addr_14556 or ('127.0.0.1', 14556)
+                                            # Send to active sender if we have one, otherwise broadcast/send to 127.0.0.1:self.udp_port_14556
+                                            target = self.udp_client_addr_14556 or ('127.0.0.1', self.udp_port_14556)
                                             self.udp_sock_14556.sendto(payload, target)
                                         except Exception:
                                             pass
+
+                                    # 5. Forward to TCP Serial Emulation clients
+                                    with self.tcp_clients_lock:
+                                        dead_clients = []
+                                        for c_sock, _ in self.tcp_clients:
+                                            try:
+                                                c_sock.sendall(payload)
+                                            except Exception:
+                                                dead_clients.append(c_sock)
+                                        for dead in dead_clients:
+                                            try:
+                                                dead.close()
+                                            except Exception:
+                                                pass
+                                            self.tcp_clients = [x for x in self.tcp_clients if x[0] != dead]
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)
             else:
                 time.sleep(0.1)
+
+    def _tcp_listen_loop(self):
+        while self.running:
+            if self.tcp_sock:
+                try:
+                    conn_sock, addr = self.tcp_sock.accept()
+                    self.log(f"TCP MAVLink Serial Emulation connection accepted from {addr}.")
+                    conn_sock.settimeout(0.1)
+
+                    # Add to clients list
+                    with self.tcp_clients_lock:
+                        self.tcp_clients.append((conn_sock, addr))
+
+                    # Spawn client handler thread
+                    c_thread = threading.Thread(target=self._tcp_client_handler, args=(conn_sock, addr), daemon=True)
+                    c_thread.start()
+                except socket.timeout:
+                    pass
+                except Exception as e:
+                    if self.running:
+                        self.log(f"Error in TCP listen loop: {e}")
+                        time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _tcp_client_handler(self, client_sock, addr):
+        while self.running:
+            try:
+                data = client_sock.recv(2048)
+                if not data:
+                    break
+                if self.ser and self.ser.is_open:
+                    framed = mux_encode(CHAN_MAVLINK, data)
+                    self.ser.write(framed)
+                    self.ser.flush()
+            except socket.timeout:
+                pass
+            except Exception:
+                break
+
+        # Cleanup client
+        try:
+            client_sock.close()
+        except Exception:
+            pass
+        with self.tcp_clients_lock:
+            self.tcp_clients = [x for x in self.tcp_clients if x[0] != client_sock]
+        self.log(f"TCP MAVLink Serial Emulation connection from {addr} closed.")
 
     def _udp_loop_14556(self):
         while self.running:
