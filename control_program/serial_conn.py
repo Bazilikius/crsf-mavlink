@@ -450,19 +450,22 @@ class SerialConnection:
                             framed = mux_encode(CHAN_MAVLINK, data)
                             self.ser.write(framed)
                             self.ser.flush()
-                except socket.timeout:
+                except (socket.timeout, TimeoutError):
                     pass
                 except ConnectionResetError:
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054:
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in UDP 14556 proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    self.log(f"Error in UDP 14556 proxy thread: {e}")
-                    time.sleep(0.1)
+                    if "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in UDP 14556 proxy thread: {e}")
+                        time.sleep(0.1)
             else:
                 time.sleep(0.1)
 
@@ -477,20 +480,23 @@ class SerialConnection:
                             framed = mux_encode(CHAN_MAVLINK, data)
                             self.ser.write(framed)
                             self.ser.flush()
-                except socket.timeout:
+                except (socket.timeout, TimeoutError):
                     pass
                 except ConnectionResetError:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054:
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in custom program UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    self.log(f"Error in custom program UDP proxy thread: {e}")
-                    time.sleep(0.1)
+                    if "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in custom program UDP proxy thread: {e}")
+                        time.sleep(0.1)
             else:
                 time.sleep(0.1)
 
@@ -505,20 +511,23 @@ class SerialConnection:
                             framed = mux_encode(CHAN_MAVLINK, data)
                             self.ser.write(framed)
                             self.ser.flush()
-                except socket.timeout:
+                except (socket.timeout, TimeoutError):
                     pass
                 except ConnectionResetError:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054:
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in secondary UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    self.log(f"Error in secondary UDP proxy thread: {e}")
-                    time.sleep(0.1)
+                    if "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in secondary UDP proxy thread: {e}")
+                        time.sleep(0.1)
             else:
                 time.sleep(0.1)
 
@@ -533,20 +542,23 @@ class SerialConnection:
                             framed = mux_encode(CHAN_MAVLINK, data)
                             self.ser.write(framed)
                             self.ser.flush()
-                except socket.timeout:
+                except (socket.timeout, TimeoutError):
                     pass
                 except ConnectionResetError:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054:
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    self.log(f"Error in UDP proxy thread: {e}")
-                    time.sleep(0.1)
+                    if "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in UDP proxy thread: {e}")
+                        time.sleep(0.1)
             else:
                 time.sleep(0.1)
 
