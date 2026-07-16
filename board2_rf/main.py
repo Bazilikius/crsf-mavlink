@@ -181,13 +181,13 @@ def init_jr_uarts(jr1_crsf, jr1_mav, jr2_crsf):
     uart0 = machine.UART(0, baudrate=jr1_mav, tx=machine.Pin(PIN_JR1_TX), rx=machine.Pin(PIN_JR1_RX))
 
     # 2. Re-initialize JR1 CRSF PIO Soft-UART on pio0 (sm 0, sm 1)
-    sm_jr1_tx = rp2.StateMachine(0, pio_uart_tx, freq=jr1_crsf * 8, set=machine.Pin(PIN_JR1_CRSF_TX), out_init=machine.Pin(PIN_JR1_CRSF_TX))
+    sm_jr1_tx = rp2.StateMachine(0, pio_uart_tx, freq=jr1_crsf * 8, set_base=machine.Pin(PIN_JR1_CRSF_TX), out_base=machine.Pin(PIN_JR1_CRSF_TX))
     sm_jr1_rx = rp2.StateMachine(1, pio_uart_rx, freq=jr1_crsf * 8, in_base=machine.Pin(PIN_JR1_CRSF_RX, machine.Pin.IN, machine.Pin.PULL_UP))
     sm_jr1_tx.active(1)
     sm_jr1_rx.active(1)
 
     # 3. Re-initialize JR2 CRSF PIO Soft-UART on pio0 (sm 2, sm 3)
-    sm_jr2_tx = rp2.StateMachine(2, pio_uart_tx, freq=jr2_crsf * 8, set=machine.Pin(PIN_JR2_TX), out_init=machine.Pin(PIN_JR2_TX))
+    sm_jr2_tx = rp2.StateMachine(2, pio_uart_tx, freq=jr2_crsf * 8, set_base=machine.Pin(PIN_JR2_TX), out_base=machine.Pin(PIN_JR2_TX))
     sm_jr2_rx = rp2.StateMachine(3, pio_uart_rx, freq=jr2_crsf * 8, in_base=machine.Pin(PIN_JR2_RX, machine.Pin.IN, machine.Pin.PULL_UP))
     sm_jr2_tx.active(1)
     sm_jr2_rx.active(1)
