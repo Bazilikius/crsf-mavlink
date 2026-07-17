@@ -199,7 +199,7 @@ class SerialConnection:
             # Try to bind the MAVP2P UDP Bridge socket (port 14445)
             try:
                 self.udp_sock_sec = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                self.udp_sock_sec.bind(('127.0.0.1', self.udp_port_sec))
+                self.udp_sock_sec.bind(('0.0.0.0', self.udp_port_sec))
                 self.udp_sock_sec.settimeout(0.1)
 
                 # Start background thread to read from 14445
@@ -214,7 +214,7 @@ class SerialConnection:
             # Try to bind the dual MAVP2P UDP Bridge socket (port 14446)
             try:
                 self.udp_sock_14446 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                self.udp_sock_14446.bind(('127.0.0.1', self.udp_port_14446))
+                self.udp_sock_14446.bind(('0.0.0.0', self.udp_port_14446))
                 self.udp_sock_14446.settimeout(0.1)
 
                 # Start background thread to read from 14446
@@ -333,17 +333,20 @@ class SerialConnection:
         return self.send_command(payload)
 
     def _read_loop(self):
+        # Default to PC mode on startup since our program immediately requests config and heartbeats
+        self.last_pc_mux_packet_time = time.time()
+
         while self.running:
             if self.ser and self.ser.is_open:
                 try:
                     if self.ser.in_waiting > 0:
                         data = self.ser.read(self.ser.in_waiting)
 
-                        for b in data:
-                            is_pc_mode = (time.time() - self.last_pc_mux_packet_time) < 5.0
+                        is_pc_mode = (time.time() - self.last_pc_mux_packet_time) < 5.0
 
-                            if is_pc_mode:
-                                # Standard PC Multiplexed Mode: parse bytes inside framed multiplexer channels
+                        if is_pc_mode:
+                            # Standard PC Multiplexed Mode: parse bytes inside framed multiplexer channels
+                            for b in data:
                                 success, chan, payload = self.usb_mux_parser.parse_byte(b)
                                 if success:
                                     self.last_pc_mux_packet_time = time.time()
@@ -354,33 +357,55 @@ class SerialConnection:
                                         for byte in payload:
                                             self.local_mav_parser.parse_byte(byte)
 
-                                        # Forward MAVLink directly to MAVP2P Bridge port 14446 using our bound socket
+                                        # Forward MAVLink directly to MAVP2P Bridge using our bound socket
                                         if self.udp_sock_sec:
                                             try:
-                                                # If we have an active client on port 14446, send directly to them; otherwise send to localhost:14446
-                                                target = self.udp_client_addr_14446 or ('127.0.0.1', self.udp_tx_port_sec)
+                                                if self.udp_client_addr_14446:
+                                                    target = (self.udp_client_addr_14446[0], self.udp_tx_port_sec)
+                                                elif self.udp_client_addr_sec:
+                                                    target = (self.udp_client_addr_sec[0], self.udp_tx_port_sec)
+                                                else:
+                                                    target = ('127.0.0.1', self.udp_tx_port_sec)
                                                 self.udp_sock_sec.sendto(payload, target)
                                             except Exception:
                                                 pass
-                            else:
-                                # Raw/Fallback Mode: parse bytes directly as standard raw MAVLink
+                        else:
+                            # Raw/Fallback Mode: parse bytes directly as standard raw MAVLink
+                            for b in data:
                                 self.local_mav_parser.parse_byte(b)
 
-                                # Send raw byte directly to MAVP2P Bridge port 14446 using our bound socket
-                                payload = bytes([b])
-                                if self.udp_sock_sec:
-                                    try:
-                                        target = self.udp_client_addr_14446 or ('127.0.0.1', self.udp_tx_port_sec)
-                                        self.udp_sock_sec.sendto(payload, target)
-                                    except Exception:
-                                        pass
+                            # Send the whole chunk of raw bytes to the UDP port, avoiding inefficient 1-byte UDP sends
+                            if self.udp_sock_sec:
+                                try:
+                                    if self.udp_client_addr_14446:
+                                        target = (self.udp_client_addr_14446[0], self.udp_tx_port_sec)
+                                    elif self.udp_client_addr_sec:
+                                        target = (self.udp_client_addr_sec[0], self.udp_tx_port_sec)
+                                    else:
+                                        target = ('127.0.0.1', self.udp_tx_port_sec)
+                                    self.udp_sock_sec.sendto(data, target)
+                                except Exception:
+                                    pass
 
-                                # Also feed byte to the multiplexer parser in case a config/multiplexed channel comes in!
+                            # Also feed bytes to the multiplexer parser in case the board switches to PC mode
+                            for b in data:
                                 success, chan, payload_mux = self.usb_mux_parser.parse_byte(b)
                                 if success:
                                     self.last_pc_mux_packet_time = time.time()
                                     if chan == CHAN_CONFIG:
                                         self._parse_config_packet(payload_mux)
+                                    elif chan == CHAN_MAVLINK:
+                                        if self.udp_sock_sec:
+                                            try:
+                                                if self.udp_client_addr_14446:
+                                                    target = (self.udp_client_addr_14446[0], self.udp_tx_port_sec)
+                                                elif self.udp_client_addr_sec:
+                                                    target = (self.udp_client_addr_sec[0], self.udp_tx_port_sec)
+                                                else:
+                                                    target = ('127.0.0.1', self.udp_tx_port_sec)
+                                                self.udp_sock_sec.sendto(payload_mux, target)
+                                            except Exception:
+                                                pass
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)
