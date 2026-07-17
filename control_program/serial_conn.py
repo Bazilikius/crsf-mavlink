@@ -152,21 +152,30 @@ class SerialConnection:
         self.on_telemetry_received_cb = on_telemetry_received_cb
         self.log_message_cb = log_message_cb
 
-        # MAVLink UDP Proxy Settings for MAVP2P Bridge (Ports 14445 and 14446)
+        # MAVLink UDP Proxy Settings
+        self.udp_sock = None
+        self.udp_thread = None
+        self.udp_client_addr = None
+        self.udp_port = 14550 # Standard Mission Planner / QGC UDP Port
+
+        # Secondary MAVLink UDP Proxy Settings (Aligned with MAVP2P bat script)
         self.udp_sock_sec = None
         self.udp_thread_sec = None
         self.udp_client_addr_sec = None
-        self.udp_port_sec = 14445  # Receives UDP from MAVP2P
-        self.udp_tx_port_sec = 14446  # Transmits UDP to MAVP2P
+        self.udp_port_sec = 14445  # Receives UDP from MAVP2P udps:127.0.0.1:14445
+        self.udp_tx_port_sec = 14446  # Transmits UDP to MAVP2P udpc:127.0.0.1:14446
 
-        # Dual listening socket on port 14446 for GCS programs connecting exclusively via 14446
-        self.udp_sock_14446 = None
-        self.udp_thread_14446 = None
-        self.udp_client_addr_14446 = None
-        self.udp_port_14446 = 14446
+        # Third MAVLink UDP Proxy Settings (for custom program)
+        self.udp_sock_custom = None
+        self.udp_thread_custom = None
+        self.udp_client_addr_custom = None
+        self.udp_port_custom = 14555  # Default custom program port
 
-        # Mux and Raw mode detection state
-        self.last_pc_mux_packet_time = 0.0
+        # Dedicated MAVLink UDP 14556 Port Settings
+        self.udp_sock_14556 = None
+        self.udp_thread_14556 = None
+        self.udp_client_addr_14556 = None
+        self.udp_port_14556 = 14556
 
         # Parse state
         self.usb_mux_parser = MuxParser()
@@ -196,35 +205,67 @@ class SerialConnection:
             self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
             self.read_thread.start()
 
-            # Try to bind the MAVP2P UDP Bridge socket (port 14445)
+            # Try to bind the MAVLink UDP Proxy Socket
+            try:
+                self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock.bind(('127.0.0.1', self.udp_port))
+                self.udp_sock.settimeout(0.1)
+
+                # Start Background UDP Thread if bind succeeded
+                self.udp_thread = threading.Thread(target=self._udp_loop, daemon=True)
+                self.udp_thread.start()
+                self.log(f"MAVLink UDP proxy server successfully started on port {self.udp_port}.")
+            except OSError as e:
+                self.udp_sock = None
+                self.udp_thread = None
+                self.log(f"Warning: Could not bind MAVLink UDP port {self.udp_port} ({e}). "
+                         "This typically means Mission Planner/QGC is already running or port is in use. "
+                         "Direct UDP telemetry proxy is disabled, but config/switching will work normally.")
+
+            # Try to bind the secondary MAVLink UDP Port 14556
             try:
                 self.udp_sock_sec = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                self.udp_sock_sec.bind(('0.0.0.0', self.udp_port_sec))
+                self.udp_sock_sec.bind(('127.0.0.1', self.udp_port_sec))
                 self.udp_sock_sec.settimeout(0.1)
 
-                # Start background thread to read from 14445
+                # Start background thread to read from 14556
                 self.udp_thread_sec = threading.Thread(target=self._udp_loop_sec, daemon=True)
                 self.udp_thread_sec.start()
-                self.log(f"MAVP2P UDP Bridge Proxy bound to port {self.udp_port_sec}, routing to port {self.udp_tx_port_sec}.")
+                self.log(f"Secondary MAVLink UDP proxy server successfully started on port {self.udp_port_sec}, transmitting to port {self.udp_tx_port_sec}.")
             except OSError as e:
                 self.udp_sock_sec = None
                 self.udp_thread_sec = None
-                self.log(f"Warning: Could not bind MAVP2P UDP Bridge port {self.udp_port_sec} ({e}).")
+                self.log(f"Warning: Could not bind secondary MAVLink UDP port {self.udp_port_sec} ({e}).")
 
-            # Try to bind the dual MAVP2P UDP Bridge socket (port 14446)
+            # Try to bind the custom program MAVLink UDP Port
             try:
-                self.udp_sock_14446 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                self.udp_sock_14446.bind(('0.0.0.0', self.udp_port_14446))
-                self.udp_sock_14446.settimeout(0.1)
+                self.udp_sock_custom = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock_custom.bind(('127.0.0.1', self.udp_port_custom))
+                self.udp_sock_custom.settimeout(0.1)
 
-                # Start background thread to read from 14446
-                self.udp_thread_14446 = threading.Thread(target=self._udp_loop_14446, daemon=True)
-                self.udp_thread_14446.start()
-                self.log(f"MAVP2P UDP Bridge Proxy also bound to port {self.udp_port_14446} to support direct port 14446 connections.")
+                # Start background thread to read from custom port
+                self.udp_thread_custom = threading.Thread(target=self._udp_loop_custom, daemon=True)
+                self.udp_thread_custom.start()
+                self.log(f"Custom Program MAVLink UDP proxy server successfully started on port {self.udp_port_custom}.")
             except OSError as e:
-                self.udp_sock_14446 = None
-                self.udp_thread_14446 = None
-                self.log(f"Warning: Could not bind MAVP2P UDP Bridge port {self.udp_port_14446} ({e}).")
+                self.udp_sock_custom = None
+                self.udp_thread_custom = None
+                self.log(f"Warning: Could not bind custom program MAVLink UDP port {self.udp_port_custom} ({e}).")
+
+            # Try to bind the dedicated MAVLink UDP Port 14556
+            try:
+                self.udp_sock_14556 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock_14556.bind(('127.0.0.1', self.udp_port_14556))
+                self.udp_sock_14556.settimeout(0.1)
+
+                # Start background thread to read from 14556
+                self.udp_thread_14556 = threading.Thread(target=self._udp_loop_14556, daemon=True)
+                self.udp_thread_14556.start()
+                self.log(f"Dedicated MAVLink UDP 14556 proxy server successfully started on port {self.udp_port_14556}.")
+            except OSError as e:
+                self.udp_sock_14556 = None
+                self.udp_thread_14556 = None
+                self.log(f"Warning: Could not bind dedicated MAVLink UDP 14556 port {self.udp_port_14556} ({e}).")
 
             return True
         except Exception as e:
@@ -236,24 +277,38 @@ class SerialConnection:
         self.running = False
         if self.read_thread:
             self.read_thread.join(timeout=1.0)
+        if self.udp_thread:
+            self.udp_thread.join(timeout=1.0)
         if self.udp_thread_sec:
             self.udp_thread_sec.join(timeout=1.0)
-        if self.udp_thread_14446:
-            self.udp_thread_14446.join(timeout=1.0)
+        if self.udp_thread_custom:
+            self.udp_thread_custom.join(timeout=1.0)
+        if self.udp_thread_14556:
+            self.udp_thread_14556.join(timeout=1.0)
 
         if self.ser and self.ser.is_open:
             self.ser.close()
         self.ser = None
+
+        if self.udp_sock:
+            self.udp_sock.close()
+        self.udp_sock = None
+        self.udp_client_addr = None
 
         if self.udp_sock_sec:
             self.udp_sock_sec.close()
         self.udp_sock_sec = None
         self.udp_client_addr_sec = None
 
-        if self.udp_sock_14446:
-            self.udp_sock_14446.close()
-        self.udp_sock_14446 = None
-        self.udp_client_addr_14446 = None
+        if self.udp_sock_custom:
+            self.udp_sock_custom.close()
+        self.udp_sock_custom = None
+        self.udp_client_addr_custom = None
+
+        if self.udp_sock_14556:
+            self.udp_sock_14556.close()
+        self.udp_sock_14556 = None
+        self.udp_client_addr_14556 = None
 
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
@@ -333,92 +388,64 @@ class SerialConnection:
         return self.send_command(payload)
 
     def _read_loop(self):
-        # Default to PC mode on startup since our program immediately requests config and heartbeats
-        self.last_pc_mux_packet_time = time.time()
-
         while self.running:
             if self.ser and self.ser.is_open:
                 try:
                     if self.ser.in_waiting > 0:
                         data = self.ser.read(self.ser.in_waiting)
 
-                        is_pc_mode = (time.time() - self.last_pc_mux_packet_time) < 5.0
+                        for b in data:
+                            success, chan, payload = self.usb_mux_parser.parse_byte(b)
+                            if success:
+                                if chan == CHAN_CONFIG:
+                                    self._parse_config_packet(payload)
+                                elif chan == CHAN_MAVLINK:
+                                    # Forward MAVLink packet bytes to the local visual map parser!
+                                    for byte in payload:
+                                        self.local_mav_parser.parse_byte(byte)
 
-                        if is_pc_mode:
-                            # Standard PC Multiplexed Mode: parse bytes inside framed multiplexer channels
-                            for b in data:
-                                success, chan, payload = self.usb_mux_parser.parse_byte(b)
-                                if success:
-                                    self.last_pc_mux_packet_time = time.time()
-                                    if chan == CHAN_CONFIG:
-                                        self._parse_config_packet(payload)
-                                    elif chan == CHAN_MAVLINK:
-                                        # Parse unpacked MAVLink packet bytes
-                                        for byte in payload:
-                                            self.local_mav_parser.parse_byte(byte)
+                                    # 1. Forward to primary UDP port client (Standard 14550)
+                                    if self.udp_sock and self.udp_client_addr:
+                                        try:
+                                            self.udp_sock.sendto(payload, self.udp_client_addr)
+                                        except Exception:
+                                            pass
 
-                                        # Forward MAVLink directly to MAVP2P Bridge using our bound socket
-                                        if self.udp_sock_sec:
-                                            try:
-                                                if self.udp_client_addr_14446:
-                                                    target = (self.udp_client_addr_14446[0], self.udp_tx_port_sec)
-                                                elif self.udp_client_addr_sec:
-                                                    target = (self.udp_client_addr_sec[0], self.udp_tx_port_sec)
-                                                else:
-                                                    target = ('127.0.0.1', self.udp_tx_port_sec)
-                                                self.udp_sock_sec.sendto(payload, target)
-                                            except Exception:
-                                                pass
-                        else:
-                            # Raw/Fallback Mode: parse bytes directly as standard raw MAVLink
-                            for b in data:
-                                self.local_mav_parser.parse_byte(b)
+                                    # 2. Forward to secondary UDP transmit port (Port 2228)
+                                    if self.udp_sock_sec:
+                                        try:
+                                            self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+                                        except Exception:
+                                            pass
 
-                            # Send the whole chunk of raw bytes to the UDP port, avoiding inefficient 1-byte UDP sends
-                            if self.udp_sock_sec:
-                                try:
-                                    if self.udp_client_addr_14446:
-                                        target = (self.udp_client_addr_14446[0], self.udp_tx_port_sec)
-                                    elif self.udp_client_addr_sec:
-                                        target = (self.udp_client_addr_sec[0], self.udp_tx_port_sec)
-                                    else:
-                                        target = ('127.0.0.1', self.udp_tx_port_sec)
-                                    self.udp_sock_sec.sendto(data, target)
-                                except Exception:
-                                    pass
+                                    # 3. Forward to custom program UDP client
+                                    if self.udp_sock_custom and self.udp_client_addr_custom:
+                                        try:
+                                            self.udp_sock_custom.sendto(payload, self.udp_client_addr_custom)
+                                        except Exception:
+                                            pass
 
-                            # Also feed bytes to the multiplexer parser in case the board switches to PC mode
-                            for b in data:
-                                success, chan, payload_mux = self.usb_mux_parser.parse_byte(b)
-                                if success:
-                                    self.last_pc_mux_packet_time = time.time()
-                                    if chan == CHAN_CONFIG:
-                                        self._parse_config_packet(payload_mux)
-                                    elif chan == CHAN_MAVLINK:
-                                        if self.udp_sock_sec:
-                                            try:
-                                                if self.udp_client_addr_14446:
-                                                    target = (self.udp_client_addr_14446[0], self.udp_tx_port_sec)
-                                                elif self.udp_client_addr_sec:
-                                                    target = (self.udp_client_addr_sec[0], self.udp_tx_port_sec)
-                                                else:
-                                                    target = ('127.0.0.1', self.udp_tx_port_sec)
-                                                self.udp_sock_sec.sendto(payload_mux, target)
-                                            except Exception:
-                                                pass
+                                    # 4. Forward to dedicated UDP port 14556
+                                    if self.udp_sock_14556:
+                                        try:
+                                            # Send to active sender if we have one, otherwise broadcast/send to 127.0.0.1:14556
+                                            target = self.udp_client_addr_14556 or ('127.0.0.1', 14556)
+                                            self.udp_sock_14556.sendto(payload, target)
+                                        except Exception:
+                                            pass
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)
             else:
                 time.sleep(0.1)
 
-    def _udp_loop_14446(self):
+    def _udp_loop_14556(self):
         while self.running:
-            if self.udp_sock_14446:
+            if self.udp_sock_14556:
                 try:
-                    data, addr = self.udp_sock_14446.recvfrom(2048)
+                    data, addr = self.udp_sock_14556.recvfrom(2048)
                     if data:
-                        self.udp_client_addr_14446 = addr
+                        self.udp_client_addr_14556 = addr
                         if self.ser and self.ser.is_open:
                             framed = mux_encode(CHAN_MAVLINK, data)
                             self.ser.write(framed)
@@ -428,16 +455,47 @@ class SerialConnection:
                 except ConnectionResetError:
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
                         pass
                     else:
-                        self.log(f"Error in secondary UDP 14446 proxy thread: {e}")
+                        self.log(f"Error in UDP 14556 proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
+                    if "timed out" in str(e).lower():
                         pass
                     else:
-                        self.log(f"Error in secondary UDP 14446 proxy thread: {e}")
+                        self.log(f"Error in UDP 14556 proxy thread: {e}")
+                        time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _udp_loop_custom(self):
+        while self.running:
+            if self.udp_sock_custom:
+                try:
+                    data, addr = self.udp_sock_custom.recvfrom(2048)
+                    if data:
+                        self.udp_client_addr_custom = addr
+                        if self.ser and self.ser.is_open:
+                            framed = mux_encode(CHAN_MAVLINK, data)
+                            self.ser.write(framed)
+                            self.ser.flush()
+                except (socket.timeout, TimeoutError):
+                    pass
+                except ConnectionResetError:
+                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
+                    pass
+                except OSError as e:
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in custom program UDP proxy thread: {e}")
+                        time.sleep(0.1)
+                except Exception as e:
+                    if "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in custom program UDP proxy thread: {e}")
                         time.sleep(0.1)
             else:
                 time.sleep(0.1)
@@ -459,16 +517,47 @@ class SerialConnection:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in secondary UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
+                    if "timed out" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in secondary UDP proxy thread: {e}")
+                        time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _udp_loop(self):
+        while self.running:
+            if self.udp_sock:
+                try:
+                    data, addr = self.udp_sock.recvfrom(2048)
+                    if data:
+                        self.udp_client_addr = addr
+                        if self.ser and self.ser.is_open:
+                            framed = mux_encode(CHAN_MAVLINK, data)
+                            self.ser.write(framed)
+                            self.ser.flush()
+                except (socket.timeout, TimeoutError):
+                    pass
+                except ConnectionResetError:
+                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
+                    pass
+                except OSError as e:
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in UDP proxy thread: {e}")
+                        time.sleep(0.1)
+                except Exception as e:
+                    if "timed out" in str(e).lower():
+                        pass
+                    else:
+                        self.log(f"Error in UDP proxy thread: {e}")
                         time.sleep(0.1)
             else:
                 time.sleep(0.1)
