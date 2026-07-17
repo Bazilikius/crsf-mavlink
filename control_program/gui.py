@@ -491,7 +491,7 @@ class ConfiguratorApp:
         self.combo_jr1_crsf.grid(row=0, column=1, sticky="w", padx=10, pady=10)
 
         ttk.Label(baud_frame, text="JR1 MAVLink Baudrate:").grid(row=1, column=0, sticky="e", padx=10, pady=10)
-        self.jr1_mav_baud_var = tk.StringVar(value="115200")
+        self.jr1_mav_baud_var = tk.StringVar(value="57600")
         self.combo_jr1_mav = ttk.Combobox(baud_frame, textvariable=self.jr1_mav_baud_var, values=baud_opts, width=12, state="readonly")
         self.combo_jr1_mav.grid(row=1, column=1, sticky="w", padx=10, pady=10)
 
