@@ -1,14 +1,13 @@
 @echo off
 :loop
-:: Update "COM50" and baud rate as needed.
-set serial_port=COM50:115200
 
-:: Run MAVP2P app and wait for it to stop
-start /wait mavp2p.exe udps:127.0.0.1:14446 udpc:127.0.0.1:14445 serial:%serial_port%
+:: Run MAVP2P app connecting to the program's UDP Bridge (14445 and 14446)
+:: instead of locking the COM port directly, allowing both programs to work concurrently.
+start /wait mavp2p.exe udpc:127.0.0.1:19415 udpc:127.0.0.1:14556 udps:127.0.0.1:14446 udpc:127.0.0.1:14445
 
 if %ERRORLEVEL% equ 0 (
- :: Stop script if exit code is "0"
- exit /b
+  :: Stop script if exit code is "0"
+  exit /b
 )
 
 :: Wait for 1 second before restarting (optional)
