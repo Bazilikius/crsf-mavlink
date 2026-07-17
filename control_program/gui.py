@@ -486,7 +486,7 @@ class ConfiguratorApp:
         baud_opts = ["9600", "57600", "115200", "400000", "420000", "460800"]
 
         ttk.Label(baud_frame, text="JR1 CRSF Baudrate:").grid(row=0, column=0, sticky="e", padx=10, pady=10)
-        self.jr1_crsf_baud_var = tk.StringVar(value="420000")
+        self.jr1_crsf_baud_var = tk.StringVar(value="400000")
         self.combo_jr1_crsf = ttk.Combobox(baud_frame, textvariable=self.jr1_crsf_baud_var, values=baud_opts, width=12, state="readonly")
         self.combo_jr1_crsf.grid(row=0, column=1, sticky="w", padx=10, pady=10)
 
@@ -496,7 +496,7 @@ class ConfiguratorApp:
         self.combo_jr1_mav.grid(row=1, column=1, sticky="w", padx=10, pady=10)
 
         ttk.Label(baud_frame, text="JR2 CRSF Baudrate:").grid(row=2, column=0, sticky="e", padx=10, pady=10)
-        self.jr2_crsf_baud_var = tk.StringVar(value="420000")
+        self.jr2_crsf_baud_var = tk.StringVar(value="400000")
         self.combo_jr2_crsf = ttk.Combobox(baud_frame, textvariable=self.jr2_crsf_baud_var, values=baud_opts, width=12, state="readonly")
         self.combo_jr2_crsf.grid(row=2, column=1, sticky="w", padx=10, pady=10)
 

@@ -240,10 +240,10 @@ class SystemConfig:
         self.vrx_6pos_switch_type = 6  # 6POS default switch type: 6pos
 
         # JR Modules Baudrates Configuration (Baudrate / 100 for single byte fit)
-        # e.g., 1152 for 115200, 4200 for 420000
-        self.jr1_crsf_baud = 4200
-        self.jr1_mav_baud = 1152
-        self.jr2_crsf_baud = 4200
+        # e.g., 576 for 57600, 1152 for 115200, 4000 for 400000, 4200 for 420000
+        self.jr1_crsf_baud = 4000
+        self.jr1_mav_baud = 576
+        self.jr2_crsf_baud = 4000
 
         # Calibration offsets
         self.azimuth_offset_deg = 0
