@@ -159,6 +159,12 @@ class SerialConnection:
         self.udp_port_sec = 14445  # Receives UDP from MAVP2P
         self.udp_tx_port_sec = 14446  # Transmits UDP to MAVP2P
 
+        # Dual listening socket on port 14446 for GCS programs connecting exclusively via 14446
+        self.udp_sock_14446 = None
+        self.udp_thread_14446 = None
+        self.udp_client_addr_14446 = None
+        self.udp_port_14446 = 14446
+
         # Mux and Raw mode detection state
         self.last_pc_mux_packet_time = 0.0
 
@@ -205,6 +211,21 @@ class SerialConnection:
                 self.udp_thread_sec = None
                 self.log(f"Warning: Could not bind MAVP2P UDP Bridge port {self.udp_port_sec} ({e}).")
 
+            # Try to bind the dual MAVP2P UDP Bridge socket (port 14446)
+            try:
+                self.udp_sock_14446 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock_14446.bind(('127.0.0.1', self.udp_port_14446))
+                self.udp_sock_14446.settimeout(0.1)
+
+                # Start background thread to read from 14446
+                self.udp_thread_14446 = threading.Thread(target=self._udp_loop_14446, daemon=True)
+                self.udp_thread_14446.start()
+                self.log(f"MAVP2P UDP Bridge Proxy also bound to port {self.udp_port_14446} to support direct port 14446 connections.")
+            except OSError as e:
+                self.udp_sock_14446 = None
+                self.udp_thread_14446 = None
+                self.log(f"Warning: Could not bind MAVP2P UDP Bridge port {self.udp_port_14446} ({e}).")
+
             return True
         except Exception as e:
             self.log(f"Error connecting to serial port: {e}")
@@ -217,6 +238,8 @@ class SerialConnection:
             self.read_thread.join(timeout=1.0)
         if self.udp_thread_sec:
             self.udp_thread_sec.join(timeout=1.0)
+        if self.udp_thread_14446:
+            self.udp_thread_14446.join(timeout=1.0)
 
         if self.ser and self.ser.is_open:
             self.ser.close()
@@ -226,6 +249,11 @@ class SerialConnection:
             self.udp_sock_sec.close()
         self.udp_sock_sec = None
         self.udp_client_addr_sec = None
+
+        if self.udp_sock_14446:
+            self.udp_sock_14446.close()
+        self.udp_sock_14446 = None
+        self.udp_client_addr_14446 = None
 
     def send_command(self, payload):
         if self.ser and self.ser.is_open:
@@ -329,7 +357,9 @@ class SerialConnection:
                                         # Forward MAVLink directly to MAVP2P Bridge port 14446 using our bound socket
                                         if self.udp_sock_sec:
                                             try:
-                                                self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+                                                # If we have an active client on port 14446, send directly to them; otherwise send to localhost:14446
+                                                target = self.udp_client_addr_14446 or ('127.0.0.1', self.udp_tx_port_sec)
+                                                self.udp_sock_sec.sendto(payload, target)
                                             except Exception:
                                                 pass
                             else:
@@ -340,7 +370,8 @@ class SerialConnection:
                                 payload = bytes([b])
                                 if self.udp_sock_sec:
                                     try:
-                                        self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+                                        target = self.udp_client_addr_14446 or ('127.0.0.1', self.udp_tx_port_sec)
+                                        self.udp_sock_sec.sendto(payload, target)
                                     except Exception:
                                         pass
 
@@ -353,6 +384,36 @@ class SerialConnection:
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+    def _udp_loop_14446(self):
+        while self.running:
+            if self.udp_sock_14446:
+                try:
+                    data, addr = self.udp_sock_14446.recvfrom(2048)
+                    if data:
+                        self.udp_client_addr_14446 = addr
+                        if self.ser and self.ser.is_open:
+                            framed = mux_encode(CHAN_MAVLINK, data)
+                            self.ser.write(framed)
+                            self.ser.flush()
+                except (socket.timeout, TimeoutError):
+                    pass
+                except ConnectionResetError:
+                    pass
+                except OSError as e:
+                    if getattr(e, 'winerror', 0) == 10054 or any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
+                        pass
+                    else:
+                        self.log(f"Error in secondary UDP 14446 proxy thread: {e}")
+                        time.sleep(0.1)
+                except Exception as e:
+                    if any(x in str(e).lower() for x in ["timeout", "timed out", "write timeout"]):
+                        pass
+                    else:
+                        self.log(f"Error in secondary UDP 14446 proxy thread: {e}")
+                        time.sleep(0.1)
             else:
                 time.sleep(0.1)
 
