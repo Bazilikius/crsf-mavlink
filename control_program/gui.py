@@ -524,10 +524,14 @@ class ConfiguratorApp:
         ttk.Label(mav_frame, text="UDP Forward 2 (14556):").grid(row=4, column=0, sticky="e", padx=15, pady=3)
         ttk.Entry(mav_frame, textvariable=self.mav_14556_port_var, width=15).grid(row=4, column=1, sticky="w", padx=15, pady=3)
 
-        ttk.Label(mav_frame, text="MAVP2P Binary Path:").grid(row=5, column=0, sticky="e", padx=15, pady=3)
-        ttk.Entry(mav_frame, textvariable=self.mav_bin_path_var, width=25).grid(row=5, column=1, sticky="w", padx=15, pady=3)
+        ttk.Label(mav_frame, text="MAVLink Baudrate:").grid(row=5, column=0, sticky="e", padx=15, pady=3)
+        self.combo_mavp2p_baud = ttk.Combobox(mav_frame, textvariable=self.jr1_mav_baud_var, values=baud_opts, width=12, state="readonly")
+        self.combo_mavp2p_baud.grid(row=5, column=1, sticky="w", padx=15, pady=3)
 
-        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=6, column=0, columnspan=2, pady=10)
+        ttk.Label(mav_frame, text="MAVP2P Binary Path:").grid(row=6, column=0, sticky="e", padx=15, pady=3)
+        ttk.Entry(mav_frame, textvariable=self.mav_bin_path_var, width=25).grid(row=6, column=1, sticky="w", padx=15, pady=3)
+
+        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=7, column=0, columnspan=2, pady=10)
 
     def setup_tracker_tab(self, parent):
         lbl_home_head = ttk.Label(parent, text="Antenna Tracker Home Coordinates", style="Header.TLabel")
