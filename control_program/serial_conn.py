@@ -430,6 +430,48 @@ class SerialConnection:
                 self.log(f"Error in MAVLink Redirector loop: {e}")
                 time.sleep(0.1)
 
+    def _forward_mavlink_bytes(self, payload):
+        # Forward MAVLink packet bytes to the local visual map parser!
+        for byte in payload:
+            self.local_mav_parser.parse_byte(byte)
+
+        # Forward to MAVLink COM Redirector (written to GCS)
+        if self.mav_redirect_ser and self.mav_redirect_ser.is_open:
+            try:
+                self.mav_redirect_ser.write(payload)
+                self.mav_redirect_ser.flush()
+            except Exception:
+                pass
+
+        # 1. Forward to primary UDP port client (Standard 14550)
+        if self.udp_sock and self.udp_client_addr:
+            try:
+                self.udp_sock.sendto(payload, self.udp_client_addr)
+            except Exception:
+                pass
+
+        # 2. Forward to secondary UDP transmit port (Port 2228)
+        if self.udp_sock_sec:
+            try:
+                self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+            except Exception:
+                pass
+
+        # 3. Forward to custom program UDP client
+        if self.udp_sock_custom and self.udp_client_addr_custom:
+            try:
+                self.udp_sock_custom.sendto(payload, self.udp_client_addr_custom)
+            except Exception:
+                pass
+
+        # 4. Forward to dedicated UDP port 14556
+        if self.udp_sock_14556:
+            try:
+                target = self.udp_client_addr_14556 or ('127.0.0.1', 14556)
+                self.udp_sock_14556.sendto(payload, target)
+            except Exception:
+                pass
+
     def _read_loop(self):
         while self.running:
             if self.ser and self.ser.is_open:
@@ -443,47 +485,13 @@ class SerialConnection:
                                 if chan == CHAN_CONFIG:
                                     self._parse_config_packet(payload)
                                 elif chan == CHAN_MAVLINK:
-                                    # Forward MAVLink packet bytes to the local visual map parser!
-                                    for byte in payload:
-                                        self.local_mav_parser.parse_byte(byte)
-
-                                    # Forward to MAVLink COM Redirector (written to GCS)
-                                    if self.mav_redirect_ser and self.mav_redirect_ser.is_open:
-                                        try:
-                                            self.mav_redirect_ser.write(payload)
-                                            self.mav_redirect_ser.flush()
-                                        except Exception:
-                                            pass
-
-                                    # 1. Forward to primary UDP port client (Standard 14550)
-                                    if self.udp_sock and self.udp_client_addr:
-                                        try:
-                                            self.udp_sock.sendto(payload, self.udp_client_addr)
-                                        except Exception:
-                                            pass
-
-                                    # 2. Forward to secondary UDP transmit port (Port 2228)
-                                    if self.udp_sock_sec:
-                                        try:
-                                            self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
-                                        except Exception:
-                                            pass
-
-                                    # 3. Forward to custom program UDP client
-                                    if self.udp_sock_custom and self.udp_client_addr_custom:
-                                        try:
-                                            self.udp_sock_custom.sendto(payload, self.udp_client_addr_custom)
-                                        except Exception:
-                                            pass
-
-                                    # 4. Forward to dedicated UDP port 14556
-                                    if self.udp_sock_14556:
-                                        try:
-                                            # Send to active sender if we have one, otherwise broadcast/send to 127.0.0.1:14556
-                                            target = self.udp_client_addr_14556 or ('127.0.0.1', 14556)
-                                            self.udp_sock_14556.sendto(payload, target)
-                                        except Exception:
-                                            pass
+                                    self._forward_mavlink_bytes(payload)
+                            else:
+                                # Adaptive parsing: if we are not in the middle of a multiplexed packet
+                                # (state == 0) or we explicitly see a MAVLink header (0xFE, 0xFD),
+                                # treat it as raw MAVLink and parse/forward directly!
+                                if self.usb_mux_parser.state == 0 or b in [0xFE, 0xFD]:
+                                    self._forward_mavlink_bytes(bytes([b]))
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)

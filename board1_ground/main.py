@@ -135,11 +135,13 @@ def write_stdout_vcp_only(data):
     if _usb is not None:
         try:
             _usb.write(data)
+            return
         except Exception:
             pass
     if hasattr(sys.stdout, 'buffer'):
         try:
             sys.stdout.buffer.write(data)
+            return
         except Exception:
             pass
 
@@ -269,7 +271,7 @@ except Exception:
     sm_ch340_tx = None
     sm_ch340_rx = None
 
-uart1 = machine.UART(1, baudrate=115200, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
+uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
 uart0 = machine.UART(0, baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
