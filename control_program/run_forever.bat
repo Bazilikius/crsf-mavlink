@@ -1,7 +1,7 @@
 @echo off
 :loop
-:: Update "COM101" and baud rate as needed.
-set serial_port=COM101:400000
+:: Update "COM123" and baud rate as needed.
+set serial_port=COM123:460800
 
 :: Run MAVP2P app and wait for it to stop
 start /wait mavp2p.exe udpc:127.0.0.1:19415 udpc:127.0.0.1:14556 serial:%serial_port%
