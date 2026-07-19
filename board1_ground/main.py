@@ -471,144 +471,6 @@ def tracker_read_potentiometers():
 
     update_servos(az_us, el_us)
 
-# --- MAVLink Tracking Parser with X.25 CRC ---
-class MavlinkParser:
-    def __init__(self):
-        self.state = 0
-        self.length = 0
-        self.msg_id = 0
-        self.payload = bytearray()
-        self.crc = 0xFFFF
-        self.is_v2 = False
-        self.payload_idx = 0
-
-    def crc_accumulate(self, byte):
-        tmp = byte ^ (self.crc & 0xFF)
-        tmp ^= (tmp << 4) & 0xFF
-        self.crc = ((self.crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)) & 0xFFFF
-
-    def parse_byte(self, b):
-        if self.state == 0:
-            if b == 0xFE:
-                self.is_v2 = False
-                self.crc = 0xFFFF
-                self.state = 1
-            elif b == 0xFD:
-                self.is_v2 = True
-                self.crc = 0xFFFF
-                self.state = 1
-        elif self.state == 1:
-            self.length = b
-            self.crc_accumulate(b)
-            self.state = 2 if self.is_v2 else 4
-        elif self.state == 2:
-            self.crc_accumulate(b)
-            self.state = 3
-        elif self.state == 3:
-            self.crc_accumulate(b)
-            self.state = 4
-        elif self.state == 4:
-            self.crc_accumulate(b)
-            self.state = 5
-        elif self.state == 5:
-            self.crc_accumulate(b)
-            self.state = 6
-        elif self.state == 6:
-            self.crc_accumulate(b)
-            self.state = 7
-        elif self.state == 7:
-            self.crc_accumulate(b)
-            if self.is_v2:
-                self.msg_id = b
-                self.state = 8
-            else:
-                self.msg_id = b
-                self.payload = bytearray()
-                self.payload_idx = 0
-                self.state = 10
-        elif self.state == 8:
-            self.msg_id |= (b << 8)
-            self.crc_accumulate(b)
-            self.state = 9
-        elif self.state == 9:
-            self.msg_id |= (b << 16)
-            self.crc_accumulate(b)
-            self.payload = bytearray()
-            self.payload_idx = 0
-            self.state = 10
-        elif self.state == 10:
-            self.payload.append(b)
-            self.crc_accumulate(b)
-            self.payload_idx += 1
-            if self.payload_idx >= self.length:
-                self.state = 11
-        elif self.state == 11:
-            self.parsed_crc = b
-            self.state = 12
-        elif self.state == 12:
-            self.parsed_crc |= (b << 8)
-            self.state = 0
-
-            extra = 104 if self.msg_id == 33 else 0
-            tmp_crc = self.crc
-            tmp_val = extra ^ (tmp_crc & 0xFF)
-            tmp_val ^= (tmp_val << 4) & 0xFF
-            final_crc = ((tmp_crc >> 8) ^ (tmp_val << 8) ^ (tmp_val << 3) ^ (tmp_val >> 4)) & 0xFFFF
-
-            if final_crc == self.parsed_crc:
-                self.handle_message()
-
-    def handle_message(self):
-        if config.manual_override == 1:
-            return
-        if self.msg_id == 33: # GLOBAL_POSITION_INT
-            if len(self.payload) < 28: return
-            lat_int = struct.unpack('<i', self.payload[4:8])[0]
-            lon_int = struct.unpack('<i', self.payload[8:12])[0]
-            alt_int = struct.unpack('<i', self.payload[16:20])[0]
-
-            lat = lat_int / 1e7
-            lon = lon_int / 1e7
-            rel_alt = alt_int / 1000.0
-
-            if not config.home_set:
-                config.home_lat = lat
-                config.home_lon = lon
-                config.home_alt = 0.0
-                config.home_set = True
-
-            lat_rad = config.home_lat * (math.pi / 180.0)
-            d_lat = lat - config.home_lat
-            d_lon = lon - config.home_lon
-            y = d_lat * 111139.0
-            x = d_lon * 111139.0 * math.cos(lat_rad)
-            z = rel_alt - config.home_alt
-
-            az_deg = math.atan2(x, y) * (180.0 / math.pi)
-            if az_deg < 0: az_deg += 360.0
-
-            # Apply Azimuth Zero Reference Offset!
-            config.live_azimuth_deg = int((az_deg - config.azimuth_offset_deg) % 360)
-
-            dist = math.sqrt(x*x + y*y)
-            el_deg = 0.0
-            if dist > 0.1:
-                el_deg = math.atan2(z, dist) * (180.0 / math.pi)
-            el_deg = max(0.0, min(el_deg, 180.0))
-            config.live_elevation_deg = int(el_deg)
-
-            # Map to servos
-            az_pct = config.live_azimuth_deg / 360.0
-            if config.azimuth_reversed: az_pct = 1.0 - az_pct
-            az_us = config.azimuth_min_us + int(az_pct * (config.azimuth_max_us - config.azimuth_min_us))
-
-            el_pct = el_deg / 180.0
-            if config.elevation_reversed: el_pct = 1.0 - el_pct
-            el_us = config.elevation_min_us + int(el_pct * (config.elevation_max_us - config.elevation_min_us))
-
-            update_servos(az_us, el_us)
-
-mav_parser = MavlinkParser()
 
 # --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
@@ -886,7 +748,6 @@ def process_crsf_byte(b):
 # --- Main Polling Engine ---
 def main():
     vrx_init()
-    oled_init()
 
     # === Safe Physical Servo Homing Sequence ===
     # Drive Elevation servo to -10 degrees (888us) on boot to home mechanical structure safely!
@@ -897,7 +758,6 @@ def main():
     time.sleep_ms(300)
 
     last_pot_update_ms = 0
-    last_oled_update_ms = 0
     last_pc_status_ms = 0
 
     poll = select.poll()
@@ -917,11 +777,6 @@ def main():
         if time.ticks_diff(now, last_pot_update_ms) >= 50:
             last_pot_update_ms = now
             tracker_read_potentiometers()
-
-        # 2. Update SSD1306 Display (500ms interval to completely avoid UART starve bottlenecks)
-        if time.ticks_diff(now, last_oled_update_ms) >= 500:
-            last_oled_update_ms = now
-            oled_update_display()
 
         # 2a. Periodically send system config and connection/MAVLink status to PC (1000ms interval)
         if time.ticks_diff(now, last_pc_status_ms) >= 1000:
@@ -948,24 +803,10 @@ def main():
                         if chan == CHAN_MAVLINK:
                             last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
 
-                            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
-                            if vcp_is_pc_mode:
-                                # Send multiplexed MAVLink to PC Configurator VCP
-                                write_stdout_vcp_only(mux_encode(CHAN_MAVLINK, payload))
-                            else:
-                                # Send RAW MAVLink to direct GCS VCP (Mission Planner/QGC)
-                                write_stdout_vcp_only(payload)
-
-                            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
-                            if ch340_is_pc_mode:
-                                # Send multiplexed MAVLink to CH340
-                                pio_write_ch340(mux_encode(CHAN_MAVLINK, payload))
-                            else:
-                                # Send RAW MAVLink to CH340
-                                pio_write_ch340(payload)
-
-                            for byte in payload:
-                                mav_parser.parse_byte(byte)
+                            # We always output RAW MAVLink to both USB VCP and Soft-UART (CH340) COM devices!
+                            # This implements "add functional com pico=com mavlink".
+                            write_stdout_vcp_only(payload)
+                            pio_write_ch340(payload)
                         elif chan == CHAN_CRSF:
                             vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
                             if vcp_is_pc_mode:
@@ -1019,20 +860,17 @@ def main():
                 vcp_data = stdin_bytes
 
         if vcp_data:
-            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
             raw_vcp_in_buf = bytearray()
-
             for b in vcp_data:
                 success, chan, payload = pc_mux_parser.parse_byte(b)
                 if success:
                     last_pc_mux_vcp_ms = time.ticks_ms()
-                    vcp_is_pc_mode = True
                     if chan == CHAN_CONFIG:
                         process_pc_command(payload)
                     elif chan == CHAN_MAVLINK:
                         uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
-                    if not vcp_is_pc_mode:
+                    if pc_mux_parser.state == 0 or b in [0xFE, 0xFD]:
                         raw_vcp_in_buf.append(b)
 
             if len(raw_vcp_in_buf) > 0:
@@ -1046,20 +884,17 @@ def main():
         # 5. Non-blocking high-speed CH340 Soft-UART polling
         ch340_data = pio_read_ch340()
         if ch340_data:
-            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
             raw_ch340_in_buf = bytearray()
-
             for b in ch340_data:
                 success, chan, payload = pc_mux_parser_ch340.parse_byte(b)
                 if success:
                     last_pc_mux_ch340_ms = time.ticks_ms()
-                    ch340_is_pc_mode = True
                     if chan == CHAN_CONFIG:
                         process_pc_command(payload)
                     elif chan == CHAN_MAVLINK:
                         uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
-                    if not ch340_is_pc_mode:
+                    if pc_mux_parser_ch340.state == 0 or b in [0xFE, 0xFD]:
                         raw_ch340_in_buf.append(b)
 
             if len(raw_ch340_in_buf) > 0:
