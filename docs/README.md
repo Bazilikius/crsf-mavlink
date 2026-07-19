@@ -1,6 +1,6 @@
 # Dual YD-RP2040 CRSF & MAVLink Multiplexer, Switcher, VRX Controller & Antenna Tracker
 
-This system utilizes two YD-RP2040 boards running MicroPython, connected via a high-speed UART1 inter-board link, to multiplex MAVLink, CRSF, and configuration commands dynamically. It features a PC-side configuration software with a MAVLink UDP bridge, antenna tracking, and a VRX module controller.
+This system utilizes two YD-RP2040 boards running MicroPython, connected via a high-speed UART1 inter-board link at **400,000 baud**, to multiplex MAVLink, CRSF, and configuration commands dynamically. It features a PC-side configuration software with a MAVLink UDP bridge, PC-processed antenna tracking, and a VRX module controller.
 
 ---
 
@@ -13,7 +13,7 @@ This system utilizes two YD-RP2040 boards running MicroPython, connected via a h
                   | (USB VCP)                                                            | (UART 0)            | (PIO SoftUART)
                   v                                                                      v                     v
             PC Configurator                                                           JR Module 1           JR Module 2
-            (MAVLink UDP Port 14550)                                                  (CRSF+MAVLink)        (CRSF Only)
+       (MAVLink UDP Port 19415/14556)                                                 (CRSF+MAVLink)        (CRSF Only)
 ```
 
 ---
@@ -32,9 +32,9 @@ This system utilizes two YD-RP2040 boards running MicroPython, connected via a h
   * **Elevation Pot (Manual override)**: `GPIO 27` (ADC 1)
 * **Cam Switch**:
   * **Cam Select**: `GPIO 18` -> High = VRX Camera active, Low = Analog Camera active
-* **OLED Display & VRX SYNTH (I2C 0)**:
-  * **SDA**: `GPIO 16` -> Connect to OLED SDA and VRX SDA
-  * **SCL**: `GPIO 17` -> Connect to OLED SCL and VRX SCL
+* **VRX SYNTH (I2C 0)**:
+  * **SDA**: `GPIO 16` -> Connect to VRX SDA
+  * **SCL**: `GPIO 17` -> Connect to VRX SCL
   * *Note: Pull-up resistors (typically 4.7kΩ) are recommended on both I2C lines.*
 
 ### Board 2: RF Module Switcher (YD-RP2040)
@@ -83,6 +83,11 @@ Both boards are designed to automatically run and operate on power-on or re-powe
 
 ---
 
+## PC-Based Tracker Servo Driving
+All MAVLink telemetry processing and tracking calculations (Azimuth/Elevation angles) are performed entirely on the PC control program side. This greatly simplifies Pico's firmware and optimizes performance. The PC computes the relative angles and drives Board 2's tracker servos dynamically using standard `0x70` command packets.
+
+---
+
 ## Running the PC Control Program
 
 The PC Configurator application allows real-time switching between JR module modes, calibrating tracker servos, setting home coordinates, and configuring video receiver (VRX) frequencies.
@@ -109,4 +114,4 @@ The PC Configurator features status indicators on the connection panel:
      ```
 4. Connect Board 1 to your computer via USB. Select its USB COM port in the PC Configurator and click **Connect**.
 5. Once connected:
-   * **GCS Integration**: The PC Configurator runs a **Transparent MAVLink UDP Proxy Server on Port 14550**. Open your Ground Control Station (e.g., Mission Planner or QGroundControl), select connection type **UDP**, set port to **14550**, and click Connect. Telemetry streams seamlessly while avoiding Windows COM port conflicts!
+   * **MAVP2P Routing**: Use `Start MAVP2P` / `Stop MAVP2P` buttons to manually manage background routing to UDP port `19415` (PC Configurator) and port `14556` (GCS like Mission Planner or QGroundControl) over 400,000 baud!

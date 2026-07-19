@@ -298,8 +298,8 @@ class ConfiguratorApp:
 
             # Sync user's custom MAVP2P ports before connecting so they take effect immediately!
             try:
-                self.conn.udp_port_sec = int(self.mav_in_port_var.get())
-                self.conn.udp_tx_port_sec = int(self.mav_out_port_var.get())
+                self.conn.udp_port_sec = int(self.mav_remote_port_var.get())
+                self.conn.udp_tx_port_sec = int(self.mav_14556_port_var.get())
             except Exception:
                 pass
 
@@ -310,8 +310,6 @@ class ConfiguratorApp:
                 self.root.after(200, self.conn.request_config_read)
                 # Start periodic PC presence heartbeat to keep Board 1 in PC_MULTIPLEXED mode
                 self.root.after(2000, self._periodic_heartbeat)
-                # Automatically start background MAVP2P process if enabled
-                self.start_mavp2p_process()
             else:
                 messagebox.showerror("Error", f"Failed to connect to {port}.")
         else:
@@ -510,28 +508,24 @@ class ConfiguratorApp:
 
         self.load_mavp2p_config()
 
-        ttk.Checkbutton(mav_frame, text="Enable Background MAVP2P on Connect", variable=self.mav_enable_var, command=self.save_mavp2p_config).grid(row=0, column=0, columnspan=2, sticky="w", padx=15, pady=3)
+        ttk.Label(mav_frame, text="Configure and manually run MAVP2P router process:", font=('Segoe UI', 9, 'bold'), foreground='#1A365D').grid(row=0, column=0, columnspan=2, sticky="w", padx=15, pady=3)
 
-        ttk.Label(mav_frame, text="MAVP2P Out Port (14446):").grid(row=1, column=0, sticky="e", padx=15, pady=3)
-        ttk.Entry(mav_frame, textvariable=self.mav_out_port_var, width=15).grid(row=1, column=1, sticky="w", padx=15, pady=3)
+        ttk.Label(mav_frame, text="UDP Forward 1 (19415):").grid(row=1, column=0, sticky="e", padx=15, pady=3)
+        ttk.Entry(mav_frame, textvariable=self.mav_remote_port_var, width=15).grid(row=1, column=1, sticky="w", padx=15, pady=3)
 
-        ttk.Label(mav_frame, text="MAVP2P In Port (14445):").grid(row=2, column=0, sticky="e", padx=15, pady=3)
-        ttk.Entry(mav_frame, textvariable=self.mav_in_port_var, width=15).grid(row=2, column=1, sticky="w", padx=15, pady=3)
+        ttk.Label(mav_frame, text="UDP Forward 2 (14556):").grid(row=2, column=0, sticky="e", padx=15, pady=3)
+        ttk.Entry(mav_frame, textvariable=self.mav_14556_port_var, width=15).grid(row=2, column=1, sticky="w", padx=15, pady=3)
 
-        ttk.Label(mav_frame, text="UDP Forward 1 (19415):").grid(row=3, column=0, sticky="e", padx=15, pady=3)
-        ttk.Entry(mav_frame, textvariable=self.mav_remote_port_var, width=15).grid(row=3, column=1, sticky="w", padx=15, pady=3)
+        ttk.Label(mav_frame, text="MAVP2P Binary Path:").grid(row=3, column=0, sticky="e", padx=15, pady=3)
+        ttk.Entry(mav_frame, textvariable=self.mav_bin_path_var, width=25).grid(row=3, column=1, sticky="w", padx=15, pady=3)
 
-        ttk.Label(mav_frame, text="UDP Forward 2 (14556):").grid(row=4, column=0, sticky="e", padx=15, pady=3)
-        ttk.Entry(mav_frame, textvariable=self.mav_14556_port_var, width=15).grid(row=4, column=1, sticky="w", padx=15, pady=3)
+        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=4, column=0, columnspan=2, pady=10)
 
-        ttk.Label(mav_frame, text="MAVLink Baudrate:").grid(row=5, column=0, sticky="e", padx=15, pady=3)
-        self.combo_mavp2p_baud = ttk.Combobox(mav_frame, textvariable=self.jr1_mav_baud_var, values=baud_opts, width=12, state="readonly")
-        self.combo_mavp2p_baud.grid(row=5, column=1, sticky="w", padx=15, pady=3)
+        self.btn_start_mavp2p = ttk.Button(mav_frame, text="Start MAVP2P", command=self.start_mavp2p_process)
+        self.btn_start_mavp2p.grid(row=5, column=0, padx=10, pady=5)
 
-        ttk.Label(mav_frame, text="MAVP2P Binary Path:").grid(row=6, column=0, sticky="e", padx=15, pady=3)
-        ttk.Entry(mav_frame, textvariable=self.mav_bin_path_var, width=25).grid(row=6, column=1, sticky="w", padx=15, pady=3)
-
-        ttk.Button(mav_frame, text="Save MAVP2P Settings", command=self.save_mavp2p_config).grid(row=7, column=0, columnspan=2, pady=10)
+        self.btn_stop_mavp2p = ttk.Button(mav_frame, text="Stop MAVP2P", command=self.stop_mavp2p_process)
+        self.btn_stop_mavp2p.grid(row=5, column=1, padx=10, pady=5)
 
     def setup_tracker_tab(self, parent):
         lbl_home_head = ttk.Label(parent, text="Antenna Tracker Home Coordinates", style="Header.TLabel")
@@ -1169,9 +1163,6 @@ class ConfiguratorApp:
     def load_mavp2p_config(self):
         import json
         import os
-        self.mav_enable_var = tk.BooleanVar(value=False)
-        self.mav_in_port_var = tk.StringVar(value="14445")
-        self.mav_out_port_var = tk.StringVar(value="14446")
         self.mav_14556_port_var = tk.StringVar(value="14556")
         self.mav_remote_port_var = tk.StringVar(value="19415")
         self.mav_bin_path_var = tk.StringVar(value="mavp2p")
@@ -1180,9 +1171,6 @@ class ConfiguratorApp:
             try:
                 with open("mavp2p_config.json", "r") as f:
                     cfg = json.load(f)
-                    self.mav_enable_var.set(cfg.get("enable", False))
-                    self.mav_in_port_var.set(str(cfg.get("in_port", "14445")))
-                    self.mav_out_port_var.set(str(cfg.get("out_port", "14446")))
                     self.mav_14556_port_var.set(str(cfg.get("port_14556", "14556")))
                     self.mav_remote_port_var.set(str(cfg.get("remote_port", "19415")))
                     self.mav_bin_path_var.set(cfg.get("bin_path", "mavp2p"))
@@ -1192,9 +1180,6 @@ class ConfiguratorApp:
     def save_mavp2p_config(self):
         import json
         cfg = {
-            "enable": self.mav_enable_var.get(),
-            "in_port": self.mav_in_port_var.get(),
-            "out_port": self.mav_out_port_var.get(),
             "port_14556": self.mav_14556_port_var.get(),
             "remote_port": self.mav_remote_port_var.get(),
             "bin_path": self.mav_bin_path_var.get()
@@ -1210,29 +1195,20 @@ class ConfiguratorApp:
         import subprocess
         import os
         self.stop_mavp2p_process()
-        if not self.mav_enable_var.get():
-            return
 
         bin_path = self.mav_bin_path_var.get()
-        port_in = self.mav_in_port_var.get()
-        port_out = self.mav_out_port_var.get()
         port_14556 = self.mav_14556_port_var.get()
         port_19415 = self.mav_remote_port_var.get()
+        port = self.port_var.get()
+        if not port:
+            port = "COM101"
 
-        # Sync with serial connection proxy definitions
-        try:
-            self.conn.udp_port_sec = int(port_in)
-            self.conn.udp_tx_port_sec = int(port_out)
-        except Exception:
-            pass
-
-        # Matches user's exact bat script but routed over the UDP bridge instead of raw serial
+        # Matches user's exact bat script connecting directly to the serial port
         cmd = [
             bin_path,
             f"udpc:127.0.0.1:{port_19415}",
             f"udpc:127.0.0.1:{port_14556}",
-            f"udps:127.0.0.1:{port_out}",
-            f"udpc:127.0.0.1:{port_in}"
+            f"serial:{port}:400000"
         ]
 
         try:
