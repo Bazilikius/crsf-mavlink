@@ -153,8 +153,8 @@ class ConfiguratorApp:
 
         ttk.Label(redirect_frame, text="Redirect to Port:").pack(side="left", padx=10, pady=8)
         self.redirect_port_var = tk.StringVar(value="COM122")
-        self.redirect_port_entry = ttk.Entry(redirect_frame, textvariable=self.redirect_port_var, width=12)
-        self.redirect_port_entry.pack(side="left", padx=5, pady=8)
+        self.redirect_port_combo = ttk.Combobox(redirect_frame, textvariable=self.redirect_port_var, width=12)
+        self.redirect_port_combo.pack(side="left", padx=5, pady=8)
 
         self.lbl_redirect_status = ttk.Label(redirect_frame, text="Redirector: Idle", font=('Segoe UI', 10, 'italic'), foreground='gray')
         self.lbl_redirect_status.pack(side="right", padx=15, pady=8)
@@ -299,6 +299,7 @@ class ConfiguratorApp:
     def refresh_ports(self):
         ports = self.conn.list_ports()
         self.port_combo['values'] = ports
+        self.redirect_port_combo['values'] = ports
         if ports:
             self.port_combo.current(0)
             self.log(f"Found {len(ports)} serial port(s).")
@@ -324,6 +325,12 @@ class ConfiguratorApp:
             if self.redirect_enable_var.get():
                 redirect_port = self.redirect_port_var.get().strip()
 
+            # Before connecting, verify the redirect port if selected
+            if redirect_port:
+                # We can check if it exists in list_ports or try to open/test it, or just let connect do it.
+                # Let's see if we can catch errors from within connect or handle them.
+                pass
+
             if self.conn.connect(port, redirect_port=redirect_port):
                 self.btn_connect['text'] = "Disconnect"
                 self.lbl_status.config(text="Connected", foreground='green')
@@ -334,6 +341,7 @@ class ConfiguratorApp:
                         self.lbl_redirect_status.config(text="Redirector: Active", foreground='green')
                     else:
                         self.lbl_redirect_status.config(text="Redirector: Failed", foreground='red')
+                        self.show_redirector_help(redirect_port)
                 else:
                     self.lbl_redirect_status.config(text="Redirector: Idle", foreground='gray')
 
@@ -353,6 +361,19 @@ class ConfiguratorApp:
             self.lbl_mav_status.config(text="MAV: NO DATA", foreground='red')
             self.lbl_redirect_status.config(text="Redirector: Idle", foreground='gray')
             self.log("Serial port disconnected.")
+
+    def show_redirector_help(self, redirect_port):
+        messagebox.showwarning(
+            "Redirector Setup Required",
+            f"Could not open virtual redirect port '{redirect_port}' (FileNotFoundError / COM port does not exist).\n\n"
+            "To redirect MAVLink telemetry to a virtual COM port in Windows:\n"
+            "1. You must first install virtual COM port emulation software like 'com0com' or VSPE.\n"
+            "2. Create a virtual COM port pair (e.g., COM122 <-> COM123).\n"
+            "3. Select COM122 as the redirect port in this GUI, and connect your Ground Control Station (GCS) to COM123.\n\n"
+            "Alternatively, use the built-in UDP proxy: simply configure Mission Planner / QGroundControl to connect via "
+            "UDP to port 14550 on 127.0.0.1, which works automatically without virtual COM ports!",
+            parent=self.root
+        )
 
     def on_redirect_toggle(self):
         # If already connected, we can dynamically start or stop redirector!
@@ -378,6 +399,7 @@ class ConfiguratorApp:
                         self.conn.mav_redirect_ser = None
                         self.lbl_redirect_status.config(text="Redirector: Failed", foreground='red')
                         self.log(f"Warning: Could not open MAVLink Redirector port {redirect_port} ({e}).")
+                        self.show_redirector_help(redirect_port)
             else:
                 # Stop redirector
                 if self.conn.mav_redirect_ser:
