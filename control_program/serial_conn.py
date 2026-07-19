@@ -455,13 +455,13 @@ class SerialConnection:
                 except ConnectionResetError:
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower() or "timeout" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in UDP 14556 proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if "timed out" in str(e).lower():
+                    if "timed out" in str(e).lower() or "timeout" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in UDP 14556 proxy thread: {e}")
@@ -486,13 +486,13 @@ class SerialConnection:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower() or "timeout" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in custom program UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if "timed out" in str(e).lower():
+                    if "timed out" in str(e).lower() or "timeout" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in custom program UDP proxy thread: {e}")
@@ -517,13 +517,13 @@ class SerialConnection:
                     # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
-                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
+                    if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower() or "timeout" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in secondary UDP proxy thread: {e}")
                         time.sleep(0.1)
                 except Exception as e:
-                    if "timed out" in str(e).lower():
+                    if "timed out" in str(e).lower() or "timeout" in str(e).lower():
                         pass
                     else:
                         self.log(f"Error in secondary UDP proxy thread: {e}")
