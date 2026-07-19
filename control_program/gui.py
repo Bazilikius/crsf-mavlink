@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import math
 import tkintermapview
+import serial
 from serial_conn import SerialConnection
 
 # FT System 5.8G Frequencies Matrix (11 Bands x 8 Channels = 88 selectable frequencies)
@@ -141,6 +142,22 @@ class ConfiguratorApp:
 
         self.lbl_mav_status = ttk.Label(conn_frame, text="MAV: NO DATA", font=('Segoe UI', 10, 'bold'), foreground='red')
         self.lbl_mav_status.pack(side="right", padx=15, pady=8)
+
+        # MAVLink Virtual COM Port Redirector (Bridge)
+        redirect_frame = ttk.LabelFrame(self.root, text=" 2. MAVLink Virtual COM Port Redirector (Bridge) ")
+        redirect_frame.pack(fill="x", padx=15, pady=5)
+
+        self.redirect_enable_var = tk.BooleanVar(value=False)
+        self.chk_redirect = ttk.Checkbutton(redirect_frame, text="Enable MAVLink COM Redirector", variable=self.redirect_enable_var, command=self.on_redirect_toggle)
+        self.chk_redirect.pack(side="left", padx=10, pady=8)
+
+        ttk.Label(redirect_frame, text="Redirect to Port:").pack(side="left", padx=10, pady=8)
+        self.redirect_port_var = tk.StringVar(value="COM122")
+        self.redirect_port_entry = ttk.Entry(redirect_frame, textvariable=self.redirect_port_var, width=12)
+        self.redirect_port_entry.pack(side="left", padx=5, pady=8)
+
+        self.lbl_redirect_status = ttk.Label(redirect_frame, text="Redirector: Idle", font=('Segoe UI', 10, 'italic'), foreground='gray')
+        self.lbl_redirect_status.pack(side="right", padx=15, pady=8)
 
         # Notebook for Tabs
         self.notebook = ttk.Notebook(self.root)
@@ -303,10 +320,23 @@ class ConfiguratorApp:
             except Exception:
                 pass
 
-            if self.conn.connect(port):
+            redirect_port = None
+            if self.redirect_enable_var.get():
+                redirect_port = self.redirect_port_var.get().strip()
+
+            if self.conn.connect(port, redirect_port=redirect_port):
                 self.btn_connect['text'] = "Disconnect"
                 self.lbl_status.config(text="Connected", foreground='green')
                 self.log(f"Successfully connected to {port}.")
+
+                if redirect_port:
+                    if self.conn.mav_redirect_ser and self.conn.mav_redirect_ser.is_open:
+                        self.lbl_redirect_status.config(text="Redirector: Active", foreground='green')
+                    else:
+                        self.lbl_redirect_status.config(text="Redirector: Failed", foreground='red')
+                else:
+                    self.lbl_redirect_status.config(text="Redirector: Idle", foreground='gray')
+
                 self.root.after(200, self.conn.request_config_read)
                 # Start periodic PC presence heartbeat to keep Board 1 in PC_MULTIPLEXED mode
                 self.root.after(2000, self._periodic_heartbeat)
@@ -321,7 +351,43 @@ class ConfiguratorApp:
             self.lbl_status.config(text="Disconnected", foreground='red')
             self.lbl_rf_status.config(text="RF: OFFLINE", foreground='red')
             self.lbl_mav_status.config(text="MAV: NO DATA", foreground='red')
+            self.lbl_redirect_status.config(text="Redirector: Idle", foreground='gray')
             self.log("Serial port disconnected.")
+
+    def on_redirect_toggle(self):
+        # If already connected, we can dynamically start or stop redirector!
+        if self.btn_connect['text'] == "Disconnect":
+            if self.redirect_enable_var.get():
+                redirect_port = self.redirect_port_var.get().strip()
+                if redirect_port:
+                    # If already active, close first
+                    if self.conn.mav_redirect_ser and self.conn.mav_redirect_ser.is_open:
+                        try:
+                            self.conn.mav_redirect_ser.close()
+                        except Exception:
+                            pass
+                    try:
+                        self.conn.mav_redirect_port = redirect_port
+                        self.conn.mav_redirect_ser = serial.Serial(redirect_port, baudrate=115200, timeout=0.1)
+                        import threading
+                        self.conn.mav_redirect_thread = threading.Thread(target=self.conn._redirect_loop, daemon=True)
+                        self.conn.mav_redirect_thread.start()
+                        self.lbl_redirect_status.config(text="Redirector: Active", foreground='green')
+                        self.log(f"MAVLink COM Redirector successfully started on {redirect_port}.")
+                    except Exception as e:
+                        self.conn.mav_redirect_ser = None
+                        self.lbl_redirect_status.config(text="Redirector: Failed", foreground='red')
+                        self.log(f"Warning: Could not open MAVLink Redirector port {redirect_port} ({e}).")
+            else:
+                # Stop redirector
+                if self.conn.mav_redirect_ser:
+                    try:
+                        self.conn.mav_redirect_ser.close()
+                    except Exception:
+                        pass
+                self.conn.mav_redirect_ser = None
+                self.lbl_redirect_status.config(text="Redirector: Idle", foreground='gray')
+                self.log("MAVLink COM Redirector stopped.")
 
     def toggle_always_on_top(self):
         state = self.always_on_top_var.get()

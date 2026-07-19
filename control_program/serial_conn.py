@@ -152,6 +152,11 @@ class SerialConnection:
         self.on_telemetry_received_cb = on_telemetry_received_cb
         self.log_message_cb = log_message_cb
 
+        # MAVLink Virtual COM Port Redirector
+        self.mav_redirect_port = None
+        self.mav_redirect_ser = None
+        self.mav_redirect_thread = None
+
         # MAVLink UDP Proxy Settings
         self.udp_sock = None
         self.udp_thread = None
@@ -196,7 +201,7 @@ class SerialConnection:
         else:
             print(msg)
 
-    def connect(self, port, baudrate=115200):
+    def connect(self, port, baudrate=115200, redirect_port=None):
         try:
             self.ser = serial.Serial(port, baudrate, timeout=0.1)
             self.running = True
@@ -204,6 +209,18 @@ class SerialConnection:
             # Start Background Read Thread
             self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
             self.read_thread.start()
+
+            # Start MAVLink Virtual COM Port Redirector if specified
+            if redirect_port:
+                self.mav_redirect_port = redirect_port
+                try:
+                    self.mav_redirect_ser = serial.Serial(redirect_port, baudrate=115200, timeout=0.1)
+                    self.mav_redirect_thread = threading.Thread(target=self._redirect_loop, daemon=True)
+                    self.mav_redirect_thread.start()
+                    self.log(f"MAVLink COM Redirector successfully started on {redirect_port}.")
+                except Exception as e:
+                    self.mav_redirect_ser = None
+                    self.log(f"Warning: Could not open MAVLink Redirector port {redirect_port} ({e}).")
 
             # Try to bind the MAVLink UDP Proxy Socket
             try:
@@ -285,10 +302,20 @@ class SerialConnection:
             self.udp_thread_custom.join(timeout=1.0)
         if self.udp_thread_14556:
             self.udp_thread_14556.join(timeout=1.0)
+        if self.mav_redirect_thread:
+            self.mav_redirect_thread.join(timeout=1.0)
+        self.mav_redirect_thread = None
 
         if self.ser and self.ser.is_open:
             self.ser.close()
         self.ser = None
+
+        if self.mav_redirect_ser and self.mav_redirect_ser.is_open:
+            try:
+                self.mav_redirect_ser.close()
+            except Exception:
+                pass
+        self.mav_redirect_ser = None
 
         if self.udp_sock:
             self.udp_sock.close()
@@ -387,6 +414,22 @@ class SerialConnection:
         payload = [0x80, (ref_deg >> 8) & 0xFF, ref_deg & 0xFF]
         return self.send_command(payload)
 
+    def _redirect_loop(self):
+        while self.running and self.mav_redirect_ser and self.mav_redirect_ser.is_open:
+            try:
+                if self.mav_redirect_ser.in_waiting > 0:
+                    data = self.mav_redirect_ser.read(self.mav_redirect_ser.in_waiting)
+                    if data:
+                        if self.ser and self.ser.is_open:
+                            framed = mux_encode(CHAN_MAVLINK, data)
+                            self.ser.write(framed)
+                            self.ser.flush()
+                else:
+                    time.sleep(0.01)
+            except Exception as e:
+                self.log(f"Error in MAVLink Redirector loop: {e}")
+                time.sleep(0.1)
+
     def _read_loop(self):
         while self.running:
             if self.ser and self.ser.is_open:
@@ -403,6 +446,14 @@ class SerialConnection:
                                     # Forward MAVLink packet bytes to the local visual map parser!
                                     for byte in payload:
                                         self.local_mav_parser.parse_byte(byte)
+
+                                    # Forward to MAVLink COM Redirector (written to GCS)
+                                    if self.mav_redirect_ser and self.mav_redirect_ser.is_open:
+                                        try:
+                                            self.mav_redirect_ser.write(payload)
+                                            self.mav_redirect_ser.flush()
+                                        except Exception:
+                                            pass
 
                                     # 1. Forward to primary UDP port client (Standard 14550)
                                     if self.udp_sock and self.udp_client_addr:

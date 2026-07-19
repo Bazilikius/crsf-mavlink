@@ -803,10 +803,17 @@ def main():
                         if chan == CHAN_MAVLINK:
                             last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
 
-                            # We always output RAW MAVLink to both USB VCP and Soft-UART (CH340) COM devices!
-                            # This implements "add functional com pico=com mavlink".
-                            write_stdout_vcp_only(payload)
-                            pio_write_ch340(payload)
+                            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
+                            if vcp_is_pc_mode:
+                                write_stdout_vcp_only(mux_encode(CHAN_MAVLINK, payload))
+                            else:
+                                write_stdout_vcp_only(payload)
+
+                            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
+                            if ch340_is_pc_mode:
+                                pio_write_ch340(mux_encode(CHAN_MAVLINK, payload))
+                            else:
+                                pio_write_ch340(payload)
                         elif chan == CHAN_CRSF:
                             vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
                             if vcp_is_pc_mode:
