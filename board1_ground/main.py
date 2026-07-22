@@ -252,13 +252,11 @@ class SystemConfig:
 config = SystemConfig()
 mux_parser = MuxParser()
 pc_mux_parser = MuxParser()
-pc_mux_parser_ch340 = MuxParser()
 
 # Connection status tracking
 last_rf_board_msg_ms = 0
 last_mav_msg_ms = 0
 last_pc_mux_vcp_ms = 0
-last_pc_mux_ch340_ms = 0
 
 # --- Hardware Initializations ---
 # Initialize CH340 Soft-UART State Machines using PIO
@@ -363,13 +361,12 @@ def tracker_read_potentiometers():
 
 # --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
-    # Only transmit config status if at least one PC interface is active
-    global last_pc_mux_vcp_ms, last_pc_mux_ch340_ms
+    # Only transmit config status if PC VCP interface is active
+    global last_pc_mux_vcp_ms
     now = time.ticks_ms()
     vcp_active = time.ticks_diff(now, last_pc_mux_vcp_ms) < 5000
-    ch340_active = time.ticks_diff(now, last_pc_mux_ch340_ms) < 5000
 
-    if not vcp_active and not ch340_active:
+    if not vcp_active:
         return
 
     # Build the 68-byte payload
@@ -434,10 +431,7 @@ def send_config_to_pc():
     payload.append(mavlink_active)
 
     packet = mux_encode(CHAN_CONFIG, payload)
-    if vcp_active:
-        write_stdout_vcp_only(packet)
-    if ch340_active:
-        pio_write_ch340(packet)
+    write_stdout_vcp_only(packet)
 
 def process_pc_command(payload):
     if not payload: return
@@ -655,9 +649,8 @@ def main():
     else:
         poll.register(sys.stdin, select.POLLIN)
 
-    global last_rf_board_msg_ms, last_mav_msg_ms, last_pc_mux_vcp_ms, last_pc_mux_ch340_ms
+    global last_rf_board_msg_ms, last_mav_msg_ms, last_pc_mux_vcp_ms
     last_pc_mux_vcp_ms = time.ticks_ms() - 10000
-    last_pc_mux_ch340_ms = time.ticks_ms() - 10000
 
     while True:
         now = time.ticks_ms()
@@ -698,19 +691,12 @@ def main():
                             else:
                                 write_stdout_vcp_only(payload)
 
-                            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
-                            if ch340_is_pc_mode:
-                                pio_write_ch340(mux_encode(CHAN_MAVLINK, payload))
-                            else:
-                                pio_write_ch340(payload)
+                            # Always transmit raw MAVLink data to CH340 port at 115200 baud
+                            pio_write_ch340(payload)
                         elif chan == CHAN_CRSF:
                             vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
                             if vcp_is_pc_mode:
                                 write_stdout_vcp_only(mux_encode(CHAN_CRSF, payload))
-
-                            ch340_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_ch340_ms) < 5000)
-                            if ch340_is_pc_mode:
-                                pio_write_ch340(mux_encode(CHAN_CRSF, payload))
 
                             # Write received CRSF back to TX16S
                             try:
@@ -777,29 +763,15 @@ def main():
                     uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                     i += 255
 
-        # 5. Non-blocking high-speed CH340 Soft-UART polling
+        # 5. Non-blocking high-speed CH340 Soft-UART polling - 100% transparent raw MAVLink forwarding
         ch340_data = pio_read_ch340()
         if ch340_data:
-            raw_ch340_in_buf = bytearray()
-            for b in ch340_data:
-                success, chan, payload = pc_mux_parser_ch340.parse_byte(b)
-                if success:
-                    last_pc_mux_ch340_ms = time.ticks_ms()
-                    if chan == CHAN_CONFIG:
-                        process_pc_command(payload)
-                    elif chan == CHAN_MAVLINK:
-                        uart1.write(mux_encode(CHAN_MAVLINK, payload))
-                else:
-                    if pc_mux_parser_ch340.state == 0 or b in [0xFE, 0xFD]:
-                        raw_ch340_in_buf.append(b)
-
-            if len(raw_ch340_in_buf) > 0:
-                # Forward raw GCS MAVLink bytes to Board 2 inside CHAN_MAVLINK chunks
-                i = 0
-                while i < len(raw_ch340_in_buf):
-                    chunk = raw_ch340_in_buf[i:i+255]
-                    uart1.write(mux_encode(CHAN_MAVLINK, chunk))
-                    i += 255
+            # Forward raw MAVLink bytes directly to Board 2 inside CHAN_MAVLINK chunks
+            i = 0
+            while i < len(ch340_data):
+                chunk = ch340_data[i:i+255]
+                uart1.write(mux_encode(CHAN_MAVLINK, chunk))
+                i += 255
 
         # Yield CPU slightly to keep the board running cool and prevent tight-loop starvation
         time.sleep_ms(1)
