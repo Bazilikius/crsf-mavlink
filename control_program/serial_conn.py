@@ -479,19 +479,28 @@ class SerialConnection:
                     if self.ser.in_waiting > 0:
                         data = self.ser.read(self.ser.in_waiting)
 
+                        raw_buffer = bytearray()
                         for b in data:
                             success, chan, payload = self.usb_mux_parser.parse_byte(b)
                             if success:
+                                # Flush accumulated raw bytes before processing the multiplexed configuration packet
+                                if len(raw_buffer) > 0:
+                                    self._forward_mavlink_bytes(bytes(raw_buffer))
+                                    raw_buffer = bytearray()
+
                                 if chan == CHAN_CONFIG:
                                     self._parse_config_packet(payload)
                                 elif chan == CHAN_MAVLINK:
                                     self._forward_mavlink_bytes(payload)
                             else:
-                                # Adaptive parsing: if we are not in the middle of a multiplexed packet
-                                # (state == 0) or we explicitly see a MAVLink header (0xFE, 0xFD),
-                                # treat it as raw MAVLink and parse/forward directly!
+                                # Adaptive parsing: if we are not in the middle of a multiplexed packet (state == 0)
+                                # or explicitly see a MAVLink header (0xFE, 0xFD), buffer it as raw MAVLink2 bytes
                                 if self.usb_mux_parser.state == 0 or b in [0xFE, 0xFD]:
-                                    self._forward_mavlink_bytes(bytes([b]))
+                                    raw_buffer.append(b)
+
+                        # Flush any remaining raw bytes at the end of the read block to avoid fragmentation
+                        if len(raw_buffer) > 0:
+                            self._forward_mavlink_bytes(bytes(raw_buffer))
                 except Exception as e:
                     self.log(f"Error in serial reading thread: {e}")
                     time.sleep(0.1)
