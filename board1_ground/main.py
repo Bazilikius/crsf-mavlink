@@ -243,7 +243,7 @@ class SystemConfig:
         # JR Modules Baudrates Configuration (Baudrate / 100 for single byte fit)
         # e.g., 576 for 57600, 1152 for 115200, 4000 for 400000, 4200 for 420000
         self.jr1_crsf_baud = 4000
-        self.jr1_mav_baud = 576
+        self.jr1_mav_baud = 1152
         self.jr2_crsf_baud = 4000
 
         # Calibration offsets

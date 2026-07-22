@@ -159,7 +159,7 @@ def pio_uart_rx():
 
 # --- Dynamic Baudrate and UART Configuration ---
 current_jr1_crsf_baud = 400000
-current_jr1_mav_baud = 57600
+current_jr1_mav_baud = 115200
 current_jr2_crsf_baud = 400000
 
 uart0 = None
