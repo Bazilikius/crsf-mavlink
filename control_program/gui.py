@@ -509,6 +509,79 @@ class ConfiguratorApp:
 
         self.last_known_uav_pos = (lat, lon)
 
+        # === Automatic Antenna Tracking calculations ===
+        if self.tracking_mode_var.get() == "auto" and self.last_known_home_pos:
+            home_lat, home_lon = self.last_known_home_pos
+            try:
+                home_alt = float(self.ent_home_alt.get())
+            except Exception:
+                home_alt = 0.0
+
+            # Convert coordinates to radians
+            lat1 = math.radians(home_lat)
+            lon1 = math.radians(home_lon)
+            lat2 = math.radians(lat)
+            lon2 = math.radians(lon)
+
+            # 1. Azimuth (Bearing) Calculation
+            dlon = lon2 - lon1
+            y = math.sin(dlon) * math.cos(lat2)
+            x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+            bearing = math.degrees(math.atan2(y, x))
+            azimuth = (bearing + 360) % 360
+
+            # 2. Elevation (Pitch) Calculation
+            R = 6371000.0 # Earth Radius in meters
+            dlat = lat2 - lat1
+            a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+            ground_dist = R * c
+
+            alt_diff = alt - home_alt
+            elevation = math.degrees(math.atan2(alt_diff, ground_dist)) if ground_dist > 0.1 else 0.0
+            elevation = max(-10.0, min(elevation, 90.0))
+
+            # 3. Map tracking angles to Servo Microseconds (based on configured calibration parameters)
+            try:
+                az_min = int(self.ent_az_min.get())
+                az_max = int(self.ent_az_max.get())
+                az_trim = int(self.ent_az_trim.get())
+                az_reversed = self.az_rev_var.get()
+
+                el_min = int(self.ent_el_min.get())
+                el_max = int(self.ent_el_max.get())
+                el_trim = int(self.ent_el_trim.get())
+                el_reversed = self.el_rev_var.get()
+            except Exception:
+                az_min, az_max, az_trim, az_reversed = 1000, 2000, 1500, False
+                el_min, el_max, el_trim, el_reversed = 1000, 2000, 1500, False
+
+            # Azimuth Servo Mapping
+            az_pct = azimuth / 360.0
+            if az_reversed:
+                az_pct = 1.0 - az_pct
+            az_us = az_min + int(az_pct * (az_max - az_min))
+
+            # Elevation Servo Mapping
+            # Standard elevation range spans -10 degrees to 90 degrees (100 degrees total span)
+            el_pct = (elevation + 10.0) / 100.0
+            if el_reversed:
+                el_pct = 1.0 - el_pct
+            el_us = el_min + int(el_pct * (el_max - el_min))
+
+            # Clamp limits safely
+            az_us = max(az_min, min(az_us, az_max))
+            el_us = max(el_min, min(el_us, el_max))
+
+            # Send computed direct servo microseconds Command 0x70 back to Board 1 to forward to Board 2
+            payload = [
+                0x70,
+                (az_us >> 8) & 0xFF, az_us & 0xFF,
+                (el_us >> 8) & 0xFF, el_us & 0xFF
+            ]
+            if self.conn.send_command(payload):
+                self.log(f"Auto-tracking Servos Updated: AZ={azimuth:.1f}° ({az_us}us), EL={elevation:.1f}° ({el_us}us)")
+
     def _update_antenna_direction_line(self, home_lat, home_lon, azimuth_deg):
         # Calculate real-time heading endpoint path on map using spherical trigonometry
         # To make it only for a distance of exactly 30km on the map scale:

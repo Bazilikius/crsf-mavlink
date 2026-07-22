@@ -502,6 +502,9 @@ def process_pc_command(payload):
         config.cam_rc_channel = payload[2]
         config.manual_override = payload[3]
         vrx_set_cam_switch(config.active_camera)
+    elif cmd == 0x70: # Direct Servo Drive Command from PC
+        # Forward direct PC servo command to Board 2 RF switcher over UART1
+        uart1.write(mux_encode(CHAN_CONFIG, payload))
     elif cmd == 0x80: # Set Current Azimuth as Zero Point Calibration!
         # Set current potentiometer read heading as the zero azimuth heading calibration offset!
         raw_az = adc_pot_az.read_u16()
