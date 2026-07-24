@@ -87,7 +87,7 @@ def mux_encode(chan_id, payload):
         i += 255
     return b"".join(chunks)
 
-# --- PIO Soft-UART Drivers for CH340 Adapter ---
+# --- PIO Soft-UART Drivers for Silicon Labs CP210x USB to UART Bridge ---
 @rp2.asm_pio(out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT, set_init=rp2.PIO.OUT_HIGH)
 def pio_uart_tx():
     pull()
@@ -109,19 +109,19 @@ def pio_uart_rx():
     push()
     jmp("start")
 
-sm_ch340_tx = None
-sm_ch340_rx = None
+sm_cp210x_tx = None
+sm_cp210x_rx = None
 
-def pio_write_ch340(data):
-    if sm_ch340_tx is not None:
+def pio_write_cp210x(data):
+    if sm_cp210x_tx is not None:
         for b in data:
-            sm_ch340_tx.put(b)
+            sm_cp210x_tx.put(b)
 
-def pio_read_ch340():
+def pio_read_cp210x():
     res = bytearray()
-    if sm_ch340_rx is not None:
-        while sm_ch340_rx.rx_fifo():
-            val = (sm_ch340_rx.get() >> 24) & 0xFF
+    if sm_cp210x_rx is not None:
+        while sm_cp210x_rx.rx_fifo():
+            val = (sm_cp210x_rx.get() >> 24) & 0xFF
             res.append(val)
     return bytes(res) if len(res) > 0 else None
 
@@ -148,7 +148,7 @@ def write_stdout_vcp_only(data):
 def write_stdout_bytes(data):
     write_stdout_vcp_only(data)
     try:
-        pio_write_ch340(data)
+        pio_write_cp210x(data)
     except Exception:
         pass
 
@@ -181,8 +181,8 @@ PIN_ADC_POT_AZ = 26
 PIN_ADC_POT_EL = 27
 PIN_TX16S_TX = 0
 PIN_TX16S_RX = 1
-PIN_CH340_TX = 12
-PIN_CH340_RX = 13
+PIN_CP210X_TX = 12
+PIN_CP210X_RX = 13
 
 # --- Global System Configuration & State ---
 class SystemConfig:
@@ -259,15 +259,15 @@ last_mav_msg_ms = 0
 last_pc_mux_vcp_ms = 0
 
 # --- Hardware Initializations ---
-# Initialize CH340 Soft-UART State Machines using PIO
+# Initialize Silicon Labs CP210x Soft-UART State Machines using PIO
 try:
-    sm_ch340_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, set_base=machine.Pin(PIN_CH340_TX), out_base=machine.Pin(PIN_CH340_TX))
-    sm_ch340_rx = rp2.StateMachine(1, pio_uart_rx, freq=115200 * 8, in_base=machine.Pin(PIN_CH340_RX, machine.Pin.IN, machine.Pin.PULL_UP))
-    sm_ch340_tx.active(1)
-    sm_ch340_rx.active(1)
+    sm_cp210x_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, set_base=machine.Pin(PIN_CP210X_TX), out_base=machine.Pin(PIN_CP210X_TX))
+    sm_cp210x_rx = rp2.StateMachine(1, pio_uart_rx, freq=115200 * 8, in_base=machine.Pin(PIN_CP210X_RX, machine.Pin.IN, machine.Pin.PULL_UP))
+    sm_cp210x_tx.active(1)
+    sm_cp210x_rx.active(1)
 except Exception:
-    sm_ch340_tx = None
-    sm_ch340_rx = None
+    sm_cp210x_tx = None
+    sm_cp210x_rx = None
 
 uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
 uart0 = machine.UART(0, baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
@@ -691,8 +691,8 @@ def main():
                             # Always transmit raw, un-encapsulated MAVLink2 data to VCP (USB)
                             write_stdout_vcp_only(payload)
 
-                            # Always transmit raw, un-encapsulated MAVLink2 data to CH340 port at 115200 baud
-                            pio_write_ch340(payload)
+                            # Always transmit raw, un-encapsulated MAVLink2 data to CP210x port at 115200 baud
+                            pio_write_cp210x(payload)
                         elif chan == CHAN_CRSF:
                             vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
                             if vcp_is_pc_mode:
@@ -763,13 +763,13 @@ def main():
                     uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                     i += 255
 
-        # 5. Non-blocking high-speed CH340 Soft-UART polling - 100% transparent raw MAVLink forwarding
-        ch340_data = pio_read_ch340()
-        if ch340_data:
+        # 5. Non-blocking high-speed CP210x Soft-UART polling - 100% transparent raw MAVLink forwarding
+        cp210x_data = pio_read_cp210x()
+        if cp210x_data:
             # Forward raw MAVLink bytes directly to Board 2 inside CHAN_MAVLINK chunks
             i = 0
-            while i < len(ch340_data):
-                chunk = ch340_data[i:i+255]
+            while i < len(cp210x_data):
+                chunk = cp210x_data[i:i+255]
                 uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                 i += 255
 
