@@ -110,7 +110,7 @@ mux_parser = MuxParser()
 
 # --- Hardware Initializations ---
 # 1. UART1 for Board 1 link (Baud 400000, with 4KB buffer to prevent overflow)
-uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX), rxbuf=4096)
+uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX), rxbuf=8192, txbuf=2048)
 
 # 2. Power Enable PWMs (for standard RC switches: 2000us is ON, 1000us is OFF)
 pwm_pwr1 = machine.PWM(machine.Pin(PIN_JR1_PWR))
@@ -146,7 +146,7 @@ def pio_uart_tx():
     jmp(x_dec, "bit_loop")   # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles!
     set(pins, 1)         [7] # Stop bit (high) for 8 cycles (1 set + 7 delay)
 
-@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT)
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, fifo_join=rp2.PIO.JOIN_RX)
 def pio_uart_rx():
     label("start")
     wait(0, pin, 0)
@@ -273,6 +273,8 @@ def main():
     last_ping_ms = 0
     while True:
         now = time.ticks_ms()
+        activity = False
+
         # Periodic Heartbeat/Ping to Board 1 (every 1000ms)
         if time.ticks_diff(now, last_ping_ms) >= 1000:
             last_ping_ms = now
@@ -285,6 +287,7 @@ def main():
         if uart1.any():
             data = uart1.read()
             if data:
+                activity = True
                 for b in data:
                     success, chan, payload = mux_parser.parse_byte(b)
                     if success:
@@ -305,15 +308,18 @@ def main():
             if uart0.any():
                 m_data = uart0.read()
                 if m_data:
+                    activity = True
                     uart1.write(mux_encode(CHAN_MAVLINK, m_data))
             # 2. JR1 CRSF telemetry via PIO Soft-UART (sm 0, sm 1)
             p_data = pio_read_jr1()
             if p_data:
+                activity = True
                 uart1.write(mux_encode(CHAN_CRSF, p_data))
 
         elif active_mode == MODE_JR2_CRSF:
             p_data = pio_read_jr2()
             if p_data:
+                activity = True
                 uart1.write(mux_encode(CHAN_CRSF, p_data))
 
         elif active_mode == MODE_SIMULTANEOUS:
@@ -321,14 +327,18 @@ def main():
             if uart0.any():
                 m_data = uart0.read()
                 if m_data:
+                    activity = True
                     uart1.write(mux_encode(CHAN_MAVLINK, m_data))
             # JR2 CRSF telemetry via PIO Soft-UART (sm 2, sm 3)
             p_data = pio_read_jr2()
             if p_data:
+                activity = True
                 uart1.write(mux_encode(CHAN_CRSF, p_data))
 
         # Yield CPU slightly to keep the board running cool and prevent tight-loop starvation
-        time.sleep_ms(1)
+        # Only sleep if no activity was handled, prioritizing instant data throughput!
+        if not activity:
+            time.sleep_ms(1)
 
 if __name__ == '__main__':
     main()

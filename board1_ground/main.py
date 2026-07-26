@@ -98,7 +98,7 @@ def pio_uart_tx():
     jmp(x_dec, "bit_loop")   # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles!
     set(pins, 1)         [7] # Stop bit (high) for 8 cycles (1 set + 7 delay)
 
-@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT)
+@rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, fifo_join=rp2.PIO.JOIN_RX)
 def pio_uart_rx():
     label("start")
     wait(0, pin, 0)
@@ -269,7 +269,7 @@ except Exception:
     sm_cp210x_tx = None
     sm_cp210x_rx = None
 
-uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=4096)
+uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=8192, txbuf=2048)
 uart0 = machine.UART(0, baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
@@ -657,6 +657,7 @@ def main():
 
     while True:
         now = time.ticks_ms()
+        activity = False
 
         # 1. Read manual potentiometers (50ms interval)
         if time.ticks_diff(now, last_pot_update_ms) >= 50:
@@ -672,6 +673,7 @@ def main():
         if uart0.any():
             b_buf = uart0.read()
             if b_buf:
+                activity = True
                 # Forward raw CRSF from TX16S directly to Board 2 as multiplexed CHAN_CRSF packets
                 uart1.write(mux_encode(CHAN_CRSF, b_buf))
                 # Also parse locally for VRX/Cam switching logic
@@ -681,6 +683,7 @@ def main():
         if uart1.any():
             b_buf = uart1.read()
             if b_buf:
+                activity = True
                 last_rf_board_msg_ms = time.ticks_ms() # We received valid UART bytes from Board 2!
                 for b in b_buf:
                     success, chan, payload = mux_parser.parse_byte(b)
@@ -717,6 +720,7 @@ def main():
         vcp_data = None
         if _usb is not None and _usb.any():
             vcp_data = _usb.read()
+            activity = True
         else:
             # Fallback stdin non-blocking loop to read all available bytes
             stdin_bytes = bytearray()
@@ -734,6 +738,7 @@ def main():
                         b = sys.stdin.read(1).encode('latin-1')
                     if b:
                         stdin_bytes.extend(b)
+                        activity = True
                     else:
                         break
                 else:
@@ -766,6 +771,7 @@ def main():
         # 5. Non-blocking high-speed CP210x Soft-UART polling - 100% transparent raw MAVLink forwarding
         cp210x_data = pio_read_cp210x()
         if cp210x_data:
+            activity = True
             # Forward raw MAVLink bytes directly to Board 2 inside CHAN_MAVLINK chunks
             i = 0
             while i < len(cp210x_data):
@@ -774,7 +780,9 @@ def main():
                 i += 255
 
         # Yield CPU slightly to keep the board running cool and prevent tight-loop starvation
-        time.sleep_ms(1)
+        # Only sleep if no activity was handled, prioritizing instant data throughput!
+        if not activity:
+            time.sleep_ms(1)
 
 if __name__ == '__main__':
     main()
