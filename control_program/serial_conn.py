@@ -465,10 +465,9 @@ class SerialConnection:
                 pass
 
         # 4. Forward to dedicated UDP port 14556
-        if self.udp_sock_14556:
+        if self.udp_sock_14556 and self.udp_client_addr_14556:
             try:
-                target = self.udp_client_addr_14556 or ('127.0.0.1', 14556)
-                self.udp_sock_14556.sendto(payload, target)
+                self.udp_sock_14556.sendto(payload, self.udp_client_addr_14556)
             except Exception:
                 pass
 
