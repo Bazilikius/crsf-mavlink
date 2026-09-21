@@ -115,7 +115,6 @@ def mux_encode(chan_id, payload):
         i += 255
     return b"".join(chunks)
 
-# --- Hardware Configuration Pin Mappings ---
 PIN_UART1_TX = 4
 PIN_UART1_RX = 5
 
@@ -133,7 +132,6 @@ PIN_JR2_PWR = 13
 PIN_SERVO_AZ = 14
 PIN_SERVO_EL = 15
 
-# Global Modes
 MODE_JR1_ALL = 1
 MODE_JR2_CRSF = 2
 MODE_SIMULTANEOUS = 3
@@ -141,7 +139,6 @@ MODE_SIMULTANEOUS = 3
 active_mode = MODE_SIMULTANEOUS
 mux_parser = MuxParser()
 
-# Hardware Initializations
 uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX), rxbuf=8192, txbuf=2048)
 
 pwm_pwr1 = machine.PWM(machine.Pin(PIN_JR1_PWR))
@@ -283,6 +280,10 @@ def switcher_process_command(payload):
                     current_jr2_crsf_baud = b3
                     init_jr_uarts(b1, b2, b3)
 
+CHUNK = 256
+uart1_rx_buf = bytearray(CHUNK)
+uart0_rx_buf = bytearray(CHUNK)
+
 def main():
     last_ping_ms = 0
     while True:
@@ -296,11 +297,13 @@ def main():
             except Exception:
                 pass
 
-        if uart1.any():
-            data = uart1.read()
-            if data:
+        avail1 = uart1.any()
+        if avail1:
+            n1 = uart1.readinto(uart1_rx_buf, min(avail1, CHUNK))
+            if n1:
                 activity = True
-                for b in data:
+                for i in range(n1):
+                    b = uart1_rx_buf[i]
                     res = mux_parser.parse_byte(b)
                     if len(res) == 4:
                         success, chan, payload, failed_raw = res
@@ -324,29 +327,21 @@ def main():
                             if active_mode in [MODE_JR1_ALL, MODE_SIMULTANEOUS]:
                                 uart0.write(failed_raw)
 
-        if active_mode == MODE_JR1_ALL:
-            if uart0.any():
-                m_data = uart0.read()
-                if m_data:
+        if active_mode in [MODE_JR1_ALL, MODE_SIMULTANEOUS]:
+            avail0 = uart0.any()
+            if avail0:
+                n0 = uart0.readinto(uart0_rx_buf, min(avail0, CHUNK))
+                if n0:
                     activity = True
+                    m_data = memoryview(uart0_rx_buf)[:n0]
                     uart1.write(mux_encode(CHAN_MAVLINK, m_data))
+
+        if active_mode == MODE_JR1_ALL:
             p_data = pio_read_jr1()
             if p_data:
                 activity = True
                 uart1.write(mux_encode(CHAN_CRSF, p_data))
-
-        elif active_mode == MODE_JR2_CRSF:
-            p_data = pio_read_jr2()
-            if p_data:
-                activity = True
-                uart1.write(mux_encode(CHAN_CRSF, p_data))
-
-        elif active_mode == MODE_SIMULTANEOUS:
-            if uart0.any():
-                m_data = uart0.read()
-                if m_data:
-                    activity = True
-                    uart1.write(mux_encode(CHAN_MAVLINK, m_data))
+        elif active_mode in [MODE_JR2_CRSF, MODE_SIMULTANEOUS]:
             p_data = pio_read_jr2()
             if p_data:
                 activity = True

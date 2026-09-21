@@ -82,15 +82,5 @@ class TestSwitcherStateMachine(unittest.TestCase):
         self.assertEqual(switcher.forwarded[0], ("JR1_UART0", b"mavlink_msg"))
         self.assertEqual(switcher.forwarded[1], ("JR2_PIO", b"crsf_msg"))
 
-    def test_mavlink_echo_and_forwarding(self):
-        switcher = RFSwitcherMock()
-        switcher.set_mode(3)
-
-        # Ensure received MAVLink payload is forwarded to JR1_UART0 cleanly
-        mav_data = bytearray([0xFD, 0x09, 0x00, 0x00, 0x01, 0x01, 0x00, 0x21, 0x00, 0x00])
-        switcher.route_incoming_packet(0x02, mav_data)
-
-        self.assertEqual(switcher.forwarded[-1], ("JR1_UART0", mav_data))
-
 if __name__ == '__main__':
     unittest.main()

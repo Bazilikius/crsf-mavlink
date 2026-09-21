@@ -590,6 +590,10 @@ def process_crsf_byte(b):
                     send_config_to_pc()
         crsf_state = 0
 
+CHUNK = 256
+uart1_rx_buf = bytearray(CHUNK)
+uart0_rx_buf = bytearray(CHUNK)
+
 def main():
     vrx_init()
     update_servos(config.azimuth_trim_us, 888)
@@ -620,20 +624,24 @@ def main():
             last_pc_status_ms = now
             send_config_to_pc()
 
-        if uart0.any():
-            b_buf = uart0.read()
-            if b_buf:
+        avail0 = uart0.any()
+        if avail0:
+            n0 = uart0.readinto(uart0_rx_buf, min(avail0, CHUNK))
+            if n0:
                 activity = True
+                b_buf = memoryview(uart0_rx_buf)[:n0]
                 uart1.write(mux_encode(CHAN_CRSF, b_buf))
                 for b in b_buf:
                     process_crsf_byte(b)
 
-        if uart1.any():
-            b_buf = uart1.read()
-            if b_buf:
+        avail1 = uart1.any()
+        if avail1:
+            n1 = uart1.readinto(uart1_rx_buf, min(avail1, CHUNK))
+            if n1:
                 activity = True
                 last_rf_board_msg_ms = time.ticks_ms()
-                for b in b_buf:
+                for i in range(n1):
+                    b = uart1_rx_buf[i]
                     res = mux_parser.parse_byte(b)
                     if len(res) == 4:
                         success, chan, payload, failed_raw = res
