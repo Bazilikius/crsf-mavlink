@@ -691,8 +691,13 @@ def main():
                         if chan == CHAN_MAVLINK:
                             last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
 
-                            # Always transmit raw, un-encapsulated MAVLink telemetry directly to VCP (USB)
-                            write_stdout_vcp_only(payload)
+                            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
+                            if vcp_is_pc_mode:
+                                # When PC Configurator is active, multiplex MAVLink frames over USB VCP to prevent stream intermixing corruption
+                                write_stdout_vcp_only(mux_encode(CHAN_MAVLINK, payload))
+                            else:
+                                # Fallback to raw un-encapsulated MAVLink stream when connected directly to GCS via COM
+                                write_stdout_vcp_only(payload)
 
                             # Always transmit raw, un-encapsulated MAVLink data to CP210x port at 115200 baud
                             pio_write_cp210x(payload)

@@ -20,37 +20,64 @@ class MuxParser:
         self.length = 0
         self.payload = bytearray()
         self.checksum = 0
+        self.header_buf = bytearray()
 
     def parse_byte(self, b):
+        # Returns (success, chan_id, payload, failed_raw_bytes)
         if self.state == 0:
             if b == SYNC1:
+                self.header_buf = bytearray([b])
                 self.state = 1
+                return False, 0, b"", b""
+            else:
+                return False, 0, b"", bytes([b])
         elif self.state == 1:
             if b == SYNC2:
+                self.header_buf.append(b)
                 self.state = 2
+                return False, 0, b"", b""
             elif b == SYNC1:
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray([b])
                 self.state = 1
+                return False, 0, b"", failed
             else:
+                self.header_buf.append(b)
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray()
                 self.state = 0
+                return False, 0, b"", failed
         elif self.state == 2:
             if b in [CHAN_CRSF, CHAN_MAVLINK, CHAN_CONFIG]:
+                self.header_buf.append(b)
                 self.chan_id = b
                 self.state = 3
+                return False, 0, b"", b""
             elif b == SYNC1:
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray([b])
                 self.state = 1
+                return False, 0, b"", failed
             else:
+                self.header_buf.append(b)
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray()
                 self.state = 0
+                return False, 0, b"", failed
         elif self.state == 3:
+            self.header_buf.append(b)
             self.length = b
             self.payload = bytearray()
             if b == 0:
                 self.state = 5
             else:
                 self.state = 4
+            return False, 0, b"", b""
         elif self.state == 4:
             self.payload.append(b)
             if len(self.payload) >= self.length:
                 self.state = 5
+            return False, 0, b"", b""
         elif self.state == 5:
             self.checksum = b
             self.state = 0
@@ -58,8 +85,14 @@ class MuxParser:
             for x in self.payload:
                 calc = (calc + x) & 0xFF
             if calc == self.checksum:
-                return True, self.chan_id, bytes(self.payload)
-        return False, 0, b""
+                self.header_buf = bytearray()
+                return True, self.chan_id, bytes(self.payload), b""
+            else:
+                failed = bytes(self.header_buf) + bytes(self.payload) + bytes([b])
+                self.header_buf = bytearray()
+                self.payload = bytearray()
+                return False, 0, b"", failed
+        return False, 0, b"", b""
 
 def mux_encode(chan_id, payload):
     chunks = []
@@ -480,9 +513,15 @@ class SerialConnection:
 
                         raw_buffer = bytearray()
                         for b in data:
-                            success, chan, payload = self.usb_mux_parser.parse_byte(b)
+                            res = self.usb_mux_parser.parse_byte(b)
+                            if len(res) == 4:
+                                success, chan, payload, failed_raw = res
+                            else:
+                                success, chan, payload = res
+                                failed_raw = b""
+
                             if success:
-                                # Flush accumulated raw bytes before processing the multiplexed configuration packet
+                                # Flush accumulated raw bytes before processing the multiplexed packet
                                 if len(raw_buffer) > 0:
                                     self._forward_mavlink_bytes(bytes(raw_buffer))
                                     raw_buffer = bytearray()
@@ -492,12 +531,10 @@ class SerialConnection:
                                 elif chan == CHAN_MAVLINK:
                                     self._forward_mavlink_bytes(payload)
                             else:
-                                # Adaptive parsing: if we are not in the middle of a multiplexed packet (state == 0)
-                                # or explicitly see a MAVLink header (0xFE, 0xFD), buffer it as raw MAVLink2 bytes
-                                if self.usb_mux_parser.state == 0 or b in [0xFE, 0xFD]:
-                                    raw_buffer.append(b)
+                                if failed_raw:
+                                    raw_buffer.extend(failed_raw)
 
-                        # Flush any remaining raw bytes at the end of the read block to avoid fragmentation
+                        # Flush any remaining raw bytes at the end of the read block
                         if len(raw_buffer) > 0:
                             self._forward_mavlink_bytes(bytes(raw_buffer))
                 except Exception as e:
