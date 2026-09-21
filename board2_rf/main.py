@@ -109,7 +109,7 @@ active_mode = MODE_SIMULTANEOUS
 mux_parser = MuxParser()
 
 # --- Hardware Initializations ---
-# 1. UART1 for Board 1 link (Baud 400000, with 4KB buffer to prevent overflow)
+# 1. UART1 for Board 1 link (Baud 400000, with 8KB rxbuf/2KB txbuf to prevent overflow)
 uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART1_TX), rx=machine.Pin(PIN_UART1_RX), rxbuf=8192, txbuf=2048)
 
 # 2. Power Enable PWMs (for standard RC switches: 2000us is ON, 1000us is OFF)

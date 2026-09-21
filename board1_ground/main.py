@@ -270,7 +270,7 @@ except Exception:
     sm_cp210x_rx = None
 
 uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=8192, txbuf=2048)
-uart0 = machine.UART(0, baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
+uart0 = machine.UART(0, baudrate=400000, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
 adc_pot_el = machine.ADC(machine.Pin(PIN_ADC_POT_EL))
@@ -691,10 +691,10 @@ def main():
                         if chan == CHAN_MAVLINK:
                             last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
 
-                            # Always transmit raw, un-encapsulated MAVLink2 data to VCP (USB)
+                            # Always transmit raw, un-encapsulated MAVLink telemetry directly to VCP (USB)
                             write_stdout_vcp_only(payload)
 
-                            # Always transmit raw, un-encapsulated MAVLink2 data to CP210x port at 115200 baud
+                            # Always transmit raw, un-encapsulated MAVLink data to CP210x port at 115200 baud
                             pio_write_cp210x(payload)
                         elif chan == CHAN_CRSF:
                             vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
