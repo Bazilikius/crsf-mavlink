@@ -112,10 +112,34 @@ def pio_uart_rx():
 sm_cp210x_tx = None
 sm_cp210x_rx = None
 
+# Non-blocking CP210x TX Ring Buffer (4096 bytes) to eliminate thread blocking and RX overruns
+CP210X_BUF_SIZE = 4096
+cp210x_tx_buf = bytearray(CP210X_BUF_SIZE)
+cp210x_head = 0
+cp210x_tail = 0
+
 def pio_write_cp210x(data):
-    if sm_cp210x_tx is not None:
-        for b in data:
-            sm_cp210x_tx.put(b)
+    global cp210x_head, cp210x_tail
+    if sm_cp210x_tx is None or not data:
+        return
+    for b in data:
+        next_head = (cp210x_head + 1) % CP210X_BUF_SIZE
+        if next_head != cp210x_tail:
+            cp210x_tx_buf[cp210x_head] = b
+            cp210x_head = next_head
+        else:
+            break
+
+def drain_cp210x_tx():
+    global cp210x_head, cp210x_tail
+    if sm_cp210x_tx is None or cp210x_head == cp210x_tail:
+        return False
+    written = False
+    while cp210x_head != cp210x_tail and sm_cp210x_tx.tx_fifo() < 4:
+        sm_cp210x_tx.put(cp210x_tx_buf[cp210x_tail])
+        cp210x_tail = (cp210x_tail + 1) % CP210X_BUF_SIZE
+        written = True
+    return written
 
 def pio_read_cp210x():
     res = bytearray()
@@ -270,7 +294,7 @@ except Exception:
     sm_cp210x_rx = None
 
 uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=8192, txbuf=2048)
-uart0 = machine.UART(0, baudrate=400000, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
+uart0 = machine.UART(0, baudrate=400000, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX), rxbuf=8192, txbuf=2048)
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
 adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
 adc_pot_el = machine.ADC(machine.Pin(PIN_ADC_POT_EL))
@@ -783,6 +807,10 @@ def main():
                 chunk = cp210x_data[i:i+255]
                 uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                 i += 255
+
+        # Drain non-blocking CP210x Soft-UART transmit ring buffer
+        if drain_cp210x_tx():
+            activity = True
 
         # Yield CPU slightly to keep the board running cool and prevent tight-loop starvation
         # Only sleep if no activity was handled, prioritizing instant data throughput!

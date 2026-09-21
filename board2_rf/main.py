@@ -177,8 +177,8 @@ def init_jr_uarts(jr1_crsf, jr1_mav, jr2_crsf):
     if sm_jr2_tx is not None: sm_jr2_tx.active(0)
     if sm_jr2_rx is not None: sm_jr2_rx.active(0)
 
-    # 1. Re-initialize hardware UART0 for JR1 MAVLink
-    uart0 = machine.UART(0, baudrate=jr1_mav, tx=machine.Pin(PIN_JR1_TX), rx=machine.Pin(PIN_JR1_RX))
+    # 1. Re-initialize hardware UART0 for JR1 MAVLink (expanded 8KB rxbuf to prevent burst drops)
+    uart0 = machine.UART(0, baudrate=jr1_mav, tx=machine.Pin(PIN_JR1_TX), rx=machine.Pin(PIN_JR1_RX), rxbuf=8192, txbuf=2048)
 
     # 2. Re-initialize JR1 CRSF PIO Soft-UART on pio0 (sm 0, sm 1)
     sm_jr1_tx = rp2.StateMachine(0, pio_uart_tx, freq=jr1_crsf * 8, set_base=machine.Pin(PIN_JR1_CRSF_TX), out_base=machine.Pin(PIN_JR1_CRSF_TX))
