@@ -450,10 +450,10 @@ class SerialConnection:
             except Exception:
                 pass
 
-        # 2. Forward to secondary UDP transmit port (Port 2228)
-        if self.udp_sock_sec:
+        # 2. Forward complete MAVLink frame to secondary UDP client if registered
+        if self.udp_sock_sec and self.udp_client_addr_sec:
             try:
-                self.udp_sock_sec.sendto(payload, ('127.0.0.1', self.udp_tx_port_sec))
+                self.udp_sock_sec.sendto(frame, self.udp_client_addr_sec)
             except Exception:
                 pass
 
@@ -512,6 +512,9 @@ class SerialConnection:
                 try:
                     data, addr = self.udp_sock_14556.recvfrom(2048)
                     if data:
+                        # Ignore self-transmitted packets on loopback
+                        if addr[1] == self.udp_port_14556:
+                            continue
                         self.udp_client_addr_14556 = addr
                         if self.ser and self.ser.is_open:
                             framed = mux_encode(CHAN_MAVLINK, data)
@@ -542,6 +545,8 @@ class SerialConnection:
                 try:
                     data, addr = self.udp_sock_custom.recvfrom(2048)
                     if data:
+                        if addr[1] == self.udp_port_custom:
+                            continue
                         self.udp_client_addr_custom = addr
                         if self.ser and self.ser.is_open:
                             framed = mux_encode(CHAN_MAVLINK, data)
@@ -550,7 +555,6 @@ class SerialConnection:
                 except (socket.timeout, TimeoutError):
                     pass
                 except ConnectionResetError:
-                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
                     if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower() or "timeout" in str(e).lower():
@@ -573,6 +577,8 @@ class SerialConnection:
                 try:
                     data, addr = self.udp_sock_sec.recvfrom(2048)
                     if data:
+                        if addr[1] == self.udp_port_sec or addr[1] == self.udp_tx_port_sec:
+                            continue
                         self.udp_client_addr_sec = addr
                         if self.ser and self.ser.is_open:
                             framed = mux_encode(CHAN_MAVLINK, data)
@@ -581,7 +587,6 @@ class SerialConnection:
                 except (socket.timeout, TimeoutError):
                     pass
                 except ConnectionResetError:
-                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
                     if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower() or "timeout" in str(e).lower():
@@ -604,6 +609,8 @@ class SerialConnection:
                 try:
                     data, addr = self.udp_sock.recvfrom(2048)
                     if data:
+                        if addr[1] == self.udp_port:
+                            continue
                         self.udp_client_addr = addr
                         if self.ser and self.ser.is_open:
                             framed = mux_encode(CHAN_MAVLINK, data)
@@ -612,7 +619,6 @@ class SerialConnection:
                 except (socket.timeout, TimeoutError):
                     pass
                 except ConnectionResetError:
-                    # Windows specific: UDP port unreachable ICMP response, safe to ignore
                     pass
                 except OSError as e:
                     if getattr(e, 'winerror', 0) == 10054 or "timed out" in str(e).lower():
