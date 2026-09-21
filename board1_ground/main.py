@@ -14,7 +14,7 @@ time.sleep(2)
 # Disable REPL keyboard interrupts to allow 100% binary-safe USB serial data streaming!
 micropython.kbd_intr(-1)
 
-# --- Shared Multiplexer Protocol (Embedded for Self-Containment) ---
+# --- Shared Multiplexer Protocol ---
 SYNC1 = 0xAA
 SYNC2 = 0x55
 
@@ -24,42 +24,69 @@ CHAN_CONFIG = 0x03
 
 class MuxParser:
     def __init__(self):
-        self.state = 0 # 0: SYNC1, 1: SYNC2, 2: CHAN_ID, 3: LEN, 4: PAYLOAD, 5: CHECKSUM
+        self.state = 0
         self.chan_id = 0
         self.length = 0
         self.payload = bytearray()
         self.checksum = 0
+        self.header_buf = bytearray()
 
     def parse_byte(self, b):
+        # Returns (success, chan_id, payload, failed_raw_bytes)
         if self.state == 0:
             if b == SYNC1:
+                self.header_buf = bytearray([b])
                 self.state = 1
+                return False, 0, b"", b""
+            else:
+                return False, 0, b"", bytes([b])
         elif self.state == 1:
             if b == SYNC2:
+                self.header_buf.append(b)
                 self.state = 2
+                return False, 0, b"", b""
             elif b == SYNC1:
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray([b])
                 self.state = 1
+                return False, 0, b"", failed
             else:
+                self.header_buf.append(b)
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray()
                 self.state = 0
+                return False, 0, b"", failed
         elif self.state == 2:
             if b in [CHAN_CRSF, CHAN_MAVLINK, CHAN_CONFIG]:
+                self.header_buf.append(b)
                 self.chan_id = b
                 self.state = 3
+                return False, 0, b"", b""
             elif b == SYNC1:
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray([b])
                 self.state = 1
+                return False, 0, b"", failed
             else:
+                self.header_buf.append(b)
+                failed = bytes(self.header_buf)
+                self.header_buf = bytearray()
                 self.state = 0
+                return False, 0, b"", failed
         elif self.state == 3:
+            self.header_buf.append(b)
             self.length = b
             self.payload = bytearray()
             if b == 0:
                 self.state = 5
             else:
                 self.state = 4
+            return False, 0, b"", b""
         elif self.state == 4:
             self.payload.append(b)
             if len(self.payload) >= self.length:
                 self.state = 5
+            return False, 0, b"", b""
         elif self.state == 5:
             self.checksum = b
             self.state = 0
@@ -67,8 +94,14 @@ class MuxParser:
             for x in self.payload:
                 calc = (calc + x) & 0xFF
             if calc == self.checksum:
-                return True, self.chan_id, bytes(self.payload)
-        return False, 0, b""
+                self.header_buf = bytearray()
+                return True, self.chan_id, bytes(self.payload), b""
+            else:
+                failed = bytes(self.header_buf) + bytes(self.payload) + bytes([b])
+                self.header_buf = bytearray()
+                self.payload = bytearray()
+                return False, 0, b"", failed
+        return False, 0, b"", b""
 
 def mux_encode(chan_id, payload):
     if isinstance(payload, str):
@@ -91,29 +124,49 @@ def mux_encode(chan_id, payload):
 @rp2.asm_pio(out_init=rp2.PIO.OUT_HIGH, out_shiftdir=rp2.PIO.SHIFT_RIGHT, set_init=rp2.PIO.OUT_HIGH)
 def pio_uart_tx():
     pull()
-    set(pins, 0)         [6] # Start bit (low) for 7 cycles (1 set + 6 delay)
-    set(x, 7)                # 1 cycle. Total start bit = 8 cycles!
+    set(pins, 0)         [6]
+    set(x, 7)
     label("bit_loop")
-    out(pins, 1)         [6] # Out 1 bit (1 out + 6 delay = 7 cycles)
-    jmp(x_dec, "bit_loop")   # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles!
-    set(pins, 1)         [7] # Stop bit (high) for 8 cycles (1 set + 7 delay)
+    out(pins, 1)         [6]
+    jmp(x_dec, "bit_loop")
+    set(pins, 1)         [7]
 
 @rp2.asm_pio(in_shiftdir=rp2.PIO.SHIFT_RIGHT, fifo_join=rp2.PIO.JOIN_RX)
 def pio_uart_rx():
     label("start")
     wait(0, pin, 0)
-    set(x, 7)            [10]         # 1 set + 10 delay = 11 cycles. Sampling at cycle 11 aligns near middle of first bit.
+    set(x, 7)            [10]
     label("bit_loop")
-    in_(pins, 1)         [6]          # In 1 bit (1 in + 6 delay = 7 cycles)
-    jmp(x_dec, "bit_loop")            # JMP instruction (1 cycle) -> Loop body = exactly 8 cycles per bit!
+    in_(pins, 1)         [6]
+    jmp(x_dec, "bit_loop")
     push()
     jmp("start")
+
+PIN_I2C_SDA = 16
+PIN_I2C_SCL = 17
+PIN_UART_TX = 4
+PIN_UART_RX = 5
+PIN_CAM_SWITCH = 18
+PIN_ADC_POT_AZ = 26
+PIN_ADC_POT_EL = 27
+PIN_TX16S_TX = 0
+PIN_TX16S_RX = 1
+PIN_CP210X_TX = 12
+PIN_CP210X_RX = 13
 
 sm_cp210x_tx = None
 sm_cp210x_rx = None
 
-# Non-blocking CP210x TX Ring Buffer (4096 bytes) to eliminate thread blocking and RX overruns
-CP210X_BUF_SIZE = 4096
+try:
+    sm_cp210x_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, set_base=machine.Pin(PIN_CP210X_TX), out_base=machine.Pin(PIN_CP210X_TX))
+    sm_cp210x_rx = rp2.StateMachine(1, pio_uart_rx, freq=115200 * 8, in_base=machine.Pin(PIN_CP210X_RX, machine.Pin.IN, machine.Pin.PULL_UP))
+    sm_cp210x_tx.active(1)
+    sm_cp210x_rx.active(1)
+except Exception:
+    pass
+
+# Non-blocking CP210x Ring Buffer (8192 bytes)
+CP210X_BUF_SIZE = 8192
 cp210x_tx_buf = bytearray(CP210X_BUF_SIZE)
 cp210x_head = 0
 cp210x_tail = 0
@@ -149,7 +202,6 @@ def pio_read_cp210x():
             res.append(val)
     return bytes(res) if len(res) > 0 else None
 
-# Adaptive, 100% Binary-Safe VCP Stream Reader and Writer Helpers
 try:
     _usb = machine.USB_VCP()
 except Exception:
@@ -169,51 +221,11 @@ def write_stdout_vcp_only(data):
         except Exception:
             pass
 
-def write_stdout_bytes(data):
-    write_stdout_vcp_only(data)
-    try:
-        pio_write_cp210x(data)
-    except Exception:
-        pass
-
-def read_stdin_byte():
-    if _usb is not None:
-        try:
-            b = _usb.read(1)
-            return b[0] if b else None
-        except Exception:
-            pass
-    if hasattr(sys.stdin, 'buffer'):
-        try:
-            b = sys.stdin.buffer.read(1)
-            return b[0] if b else None
-        except Exception:
-            pass
-    try:
-        char = sys.stdin.read(1)
-        return ord(char) if char else None
-    except Exception:
-        return None
-
-# --- Hardware Configuration Pin Mappings ---
-PIN_I2C_SDA = 16
-PIN_I2C_SCL = 17
-PIN_UART_TX = 4
-PIN_UART_RX = 5
-PIN_CAM_SWITCH = 18
-PIN_ADC_POT_AZ = 26
-PIN_ADC_POT_EL = 27
-PIN_TX16S_TX = 0
-PIN_TX16S_RX = 1
-PIN_CP210X_TX = 12
-PIN_CP210X_RX = 13
-
-# --- Global System Configuration & State ---
+# Hardware Configuration & System State
 class SystemConfig:
     def __init__(self):
-        self.system_mode = 3 # 1: JR1, 2: JR2, 3: Simultaneous
+        self.system_mode = 3
 
-        # Servo calibration (us)
         self.azimuth_min_us = 1000
         self.azimuth_max_us = 2000
         self.azimuth_trim_us = 1500
@@ -224,75 +236,49 @@ class SystemConfig:
         self.elevation_trim_us = 1500
         self.elevation_reversed = 0
 
-        # GPS/Home coordinates
         self.home_lat = 0.0
         self.home_lon = 0.0
         self.home_alt = 0.0
         self.home_set = False
 
-        # VRX & Camera
         self.vrx_rc_channel = 8
         self.vrx_band = 3
         self.vrx_channel = 0
         self.vrx_frequency_mhz = 5740
 
         self.manual_override = 0
-        self.active_camera = 1 # 1: VRX, 0: Analog
+        self.active_camera = 1
         self.cam_rc_channel = 7
 
-        # Real-time state
         self.live_azimuth_deg = 0
         self.live_elevation_deg = 0
 
-        # Customizable toggle switch positions mapping for video receiver (FT System 5.8G)
-        self.vrx_positions_count = 3 # Default to a 3-position toggle switch
+        self.vrx_positions_count = 3
         self.vrx_mapped_channels = [
-            [0, 0], # Pos 1 (0): Band A, Channel 1 (5865 MHz)
-            [3, 0], # Pos 2 (1): Band F, Channel 1 (5740 MHz)
-            [4, 0], # Pos 3 (2): Band R, Channel 1 (5658 MHz)
-            [0, 0], # Pos 4 (3): Default A1
-            [0, 0], # Pos 5 (4): Default A1
-            [0, 0], # Pos 6 (5): Default A1
-            [0, 0], # Pos 7 (6): Default A1
-            [0, 0]  # Pos 8 (7): Default A1
+            [0, 0], [3, 0], [4, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]
         ]
 
-        # S2 & 6POS VRX Control parameters
-        self.vrx_control_mode = 3      # 1: Only S2, 2: Only 6POS, 3: S2 + 6POS, 4: Mapping Table
-        self.vrx_s2_rc_channel = 8     # S2 default channel 8
-        self.vrx_s2_switch_type = 8    # S2 default switch type: 8pos
-        self.vrx_6pos_rc_channel = 9   # 6POS default channel 9
-        self.vrx_6pos_switch_type = 6  # 6POS default switch type: 6pos
+        self.vrx_control_mode = 3
+        self.vrx_s2_rc_channel = 8
+        self.vrx_s2_switch_type = 8
+        self.vrx_6pos_rc_channel = 9
+        self.vrx_6pos_switch_type = 6
 
-        # JR Modules Baudrates Configuration (Baudrate / 100 for single byte fit)
-        # e.g., 576 for 57600, 1152 for 115200, 4000 for 400000, 4200 for 420000
         self.jr1_crsf_baud = 4000
         self.jr1_mav_baud = 1152
         self.jr2_crsf_baud = 4000
 
-        # Calibration offsets
         self.azimuth_offset_deg = 0
 
 config = SystemConfig()
 mux_parser = MuxParser()
 pc_mux_parser = MuxParser()
 
-# Connection status tracking
 last_rf_board_msg_ms = 0
 last_mav_msg_ms = 0
-last_pc_mux_vcp_ms = 0
+last_pc_mux_vcp_ms = time.ticks_ms() - 10000
 
-# --- Hardware Initializations ---
-# Initialize Silicon Labs CP210x Soft-UART State Machines using PIO
-try:
-    sm_cp210x_tx = rp2.StateMachine(0, pio_uart_tx, freq=115200 * 8, set_base=machine.Pin(PIN_CP210X_TX), out_base=machine.Pin(PIN_CP210X_TX))
-    sm_cp210x_rx = rp2.StateMachine(1, pio_uart_rx, freq=115200 * 8, in_base=machine.Pin(PIN_CP210X_RX, machine.Pin.IN, machine.Pin.PULL_UP))
-    sm_cp210x_tx.active(1)
-    sm_cp210x_rx.active(1)
-except Exception:
-    sm_cp210x_tx = None
-    sm_cp210x_rx = None
-
+# Hardware UARTs with expanded 8KB RX buffers
 uart1 = machine.UART(1, baudrate=400000, tx=machine.Pin(PIN_UART_TX), rx=machine.Pin(PIN_UART_RX), rxbuf=8192, txbuf=2048)
 uart0 = machine.UART(0, baudrate=400000, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX), rxbuf=8192, txbuf=2048)
 i2c0 = machine.I2C(0, sda=machine.Pin(PIN_I2C_SDA), scl=machine.Pin(PIN_I2C_SCL), freq=400000)
@@ -300,29 +286,25 @@ adc_pot_az = machine.ADC(machine.Pin(PIN_ADC_POT_AZ))
 adc_pot_el = machine.ADC(machine.Pin(PIN_ADC_POT_EL))
 cam_switch_pin = machine.Pin(PIN_CAM_SWITCH, machine.Pin.OUT)
 
-# --- Helper Functions ---
 def update_servos(az_us, el_us):
     az_us = max(config.azimuth_min_us, min(az_us, config.azimuth_max_us))
     el_us = max(config.elevation_min_us, min(el_us, config.elevation_max_us))
-
     cmd = bytearray([0x70, (az_us >> 8) & 0xFF, az_us & 0xFF, (el_us >> 8) & 0xFF, el_us & 0xFF])
-    enc = mux_encode(CHAN_CONFIG, cmd)
-    uart1.write(enc)
+    uart1.write(mux_encode(CHAN_CONFIG, cmd))
 
-# FT System 5.8G Frequencies Matrix (11 Bands x 8 Channels = 88 selectable frequencies)
 VRX_I2C_ADDR = 0x35
 VRX_FREQ_TABLE = [
-    [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725], # Band A
-    [5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866], # Band B
-    [5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945], # Band E
-    [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880], # Band F
-    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917], # Band R
-    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621], # Band D
-    [4990, 5020, 5050, 5080, 5110, 5140, 5170, 5200], # Band X
-    [5333, 5373, 5413, 5453, 5493, 5533, 5573, 5613], # Band L
-    [4867, 4884, 4921, 4958, 4995, 5032, 5069, 5099], # Band J
-    [5325, 5348, 5366, 5384, 5402, 5420, 5438, 5456], # Band U
-    [5474, 5492, 5510, 5528, 5546, 5564, 5582, 5600]  # Band O
+    [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725],
+    [5733, 5752, 5771, 5790, 5809, 5828, 5847, 5866],
+    [5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945],
+    [5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880],
+    [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917],
+    [5362, 5399, 5436, 5473, 5510, 5547, 5584, 5621],
+    [4990, 5020, 5050, 5080, 5110, 5140, 5170, 5200],
+    [5333, 5373, 5413, 5453, 5493, 5533, 5573, 5613],
+    [4867, 4884, 4921, 4958, 4995, 5032, 5069, 5099],
+    [5325, 5348, 5366, 5384, 5402, 5420, 5438, 5456],
+    [5474, 5492, 5510, 5528, 5546, 5564, 5582, 5600]
 ]
 
 def vrx_set_frequency(mhz):
@@ -331,7 +313,6 @@ def vrx_set_frequency(mhz):
     N = f_val // 2
     A = (f_val % 2) * 16
     reg_val = (A & 0x1F) | ((N & 0x1FF) << 5)
-
     cmd = bytearray([0x0F, reg_val & 0xFF, (reg_val >> 8) & 0xFF])
     try:
         i2c0.writeto(VRX_I2C_ADDR, cmd)
@@ -339,7 +320,7 @@ def vrx_set_frequency(mhz):
         pass
 
 def vrx_set_band_channel(band, channel):
-    band = max(0, min(band, 10)) # 11 Bands: 0 to 10
+    band = max(0, min(band, 10))
     channel = max(0, min(channel, 7))
     config.vrx_band = band
     config.vrx_channel = channel
@@ -354,17 +335,13 @@ def vrx_init():
     cam_switch_pin.value(1 if config.active_camera == 1 else 0)
     vrx_set_band_channel(config.vrx_band, config.vrx_channel)
 
-# --- ADC Potentiometer Processing ---
 def tracker_read_potentiometers():
     if config.manual_override != 1:
         return
     raw_az = adc_pot_az.read_u16()
     raw_el = adc_pot_el.read_u16()
 
-    # Calculate initial raw azimuth degrees
     raw_az_deg = int((raw_az * 360) / 65535)
-
-    # Apply calibrated zero reference offset
     config.live_azimuth_deg = (raw_az_deg - config.azimuth_offset_deg) % 360
     config.live_elevation_deg = int((raw_el * 180) / 65535)
 
@@ -382,18 +359,12 @@ def tracker_read_potentiometers():
 
     update_servos(az_us, el_us)
 
-
-# --- PC Commands and Configuration Serialization ---
 def send_config_to_pc():
-    # Only transmit config status if PC VCP interface is active
     global last_pc_mux_vcp_ms
     now = time.ticks_ms()
-    vcp_active = time.ticks_diff(now, last_pc_mux_vcp_ms) < 5000
-
-    if not vcp_active:
+    if time.ticks_diff(now, last_pc_mux_vcp_ms) >= 5000:
         return
 
-    # Build the 68-byte payload
     payload = bytearray([
         config.system_mode,
         (config.azimuth_min_us >> 8) & 0xFF, config.azimuth_min_us & 0xFF,
@@ -424,20 +395,17 @@ def send_config_to_pc():
     payload.append((config.live_elevation_deg >> 8) & 0xFF)
     payload.append(config.live_elevation_deg & 0xFF)
 
-    # Pack the position switch table mapping
     payload.append(config.vrx_positions_count)
     for i in range(8):
         payload.append(config.vrx_mapped_channels[i][0])
         payload.append(config.vrx_mapped_channels[i][1])
 
-    # Append the 5 S2 & 6POS VRX parameters
     payload.append(config.vrx_control_mode)
     payload.append(config.vrx_s2_rc_channel)
     payload.append(config.vrx_s2_switch_type)
     payload.append(config.vrx_6pos_rc_channel)
     payload.append(config.vrx_6pos_switch_type)
 
-    # Append the JR modules baudrate configurations (stored as 2-byte values, e.g. 115200 -> 1152)
     payload.append((config.jr1_crsf_baud >> 8) & 0xFF)
     payload.append(config.jr1_crsf_baud & 0xFF)
     payload.append((config.jr1_mav_baud >> 8) & 0xFF)
@@ -445,17 +413,14 @@ def send_config_to_pc():
     payload.append((config.jr2_crsf_baud >> 8) & 0xFF)
     payload.append(config.jr2_crsf_baud & 0xFF)
 
-    # Append rf_board_online and mavlink_active connection indicators (Bytes 68 and 69)
     global last_rf_board_msg_ms, last_mav_msg_ms
-    now = time.ticks_ms()
     rf_board_online = 1 if time.ticks_diff(now, last_rf_board_msg_ms) < 2500 else 0
     mavlink_active = 1 if time.ticks_diff(now, last_mav_msg_ms) < 3000 else 0
 
     payload.append(rf_board_online)
     payload.append(mavlink_active)
 
-    packet = mux_encode(CHAN_CONFIG, payload)
-    write_stdout_vcp_only(packet)
+    write_stdout_vcp_only(mux_encode(CHAN_CONFIG, payload))
 
 def process_pc_command(payload):
     if not payload: return
@@ -463,8 +428,7 @@ def process_pc_command(payload):
 
     if cmd == 0x10:
         config.system_mode = payload[1]
-        enc = mux_encode(CHAN_CONFIG, bytearray([0x10, config.system_mode]))
-        uart1.write(enc)
+        uart1.write(mux_encode(CHAN_CONFIG, bytearray([0x10, config.system_mode])))
     elif cmd == 0x20:
         config.azimuth_min_us = (payload[1] << 8) | payload[2]
         config.azimuth_max_us = (payload[3] << 8) | payload[4]
@@ -479,18 +443,16 @@ def process_pc_command(payload):
         config.home_lon = struct.unpack('<f', bytes(payload[5:9]))[0]
         config.home_alt = struct.unpack('<f', bytes(payload[9:13]))[0]
         config.home_set = True
-    elif cmd == 0x40: # Extended VRX configuration command
+    elif cmd == 0x40:
         if len(payload) >= 24:
             config.vrx_rc_channel = payload[1]
             config.vrx_positions_count = payload[2]
-
             config.vrx_control_mode = payload[3]
             config.vrx_s2_rc_channel = payload[4]
             config.vrx_s2_switch_type = payload[5]
             config.vrx_6pos_rc_channel = payload[6]
             config.vrx_6pos_switch_type = payload[7]
 
-            # Unpack 8 mappings
             idx = 8
             for i in range(8):
                 config.vrx_mapped_channels[i][0] = payload[idx]
@@ -498,23 +460,15 @@ def process_pc_command(payload):
                 idx += 2
 
             if len(payload) >= 30:
-                # Payload contains the 3 baudrate fields as well! (e.g. 6 bytes for 3 baudrates)
                 config.jr1_crsf_baud = (payload[idx] << 8) | payload[idx+1]
                 config.jr1_mav_baud = (payload[idx+2] << 8) | payload[idx+3]
                 config.jr2_crsf_baud = (payload[idx+4] << 8) | payload[idx+5]
-                # Dynamically update the TX16S CRSF UART0 baudrate on Board 1
-                try:
-                    uart0.init(baudrate=config.jr1_crsf_baud * 100, tx=machine.Pin(PIN_TX16S_TX), rx=machine.Pin(PIN_TX16S_RX))
-                except Exception:
-                    pass
 
-            # Forward the exact configuration to board 2 RF switcher over UART1
             uart1.write(mux_encode(CHAN_CONFIG, payload))
-
             if config.vrx_control_mode == 4:
                 b, ch = config.vrx_mapped_channels[0]
                 vrx_set_band_channel(b, ch)
-    elif cmd == 0x45: # Direct I2C Video Receiver Band/Channel Change Command
+    elif cmd == 0x45:
         band = max(0, min(payload[1], 10))
         channel = max(0, min(payload[2], 7))
         vrx_set_band_channel(band, channel)
@@ -526,31 +480,24 @@ def process_pc_command(payload):
         config.cam_rc_channel = payload[2]
         config.manual_override = payload[3]
         vrx_set_cam_switch(config.active_camera)
-    elif cmd == 0x70: # Direct Servo Drive Command from PC
-        # Forward direct PC servo command to Board 2 RF switcher over UART1
+    elif cmd == 0x70:
         uart1.write(mux_encode(CHAN_CONFIG, payload))
-    elif cmd == 0x80: # Set Current Azimuth as Zero Point Calibration!
-        # Set current potentiometer read heading as the zero azimuth heading calibration offset!
+    elif cmd == 0x80:
         raw_az = adc_pot_az.read_u16()
         raw_az_deg = int((raw_az * 360) / 65535)
-
-        # Read the target reference degrees from the payload if provided
         ref_deg = 0
         if len(payload) >= 3:
             ref_deg = (payload[1] << 8) | payload[2]
-
         config.azimuth_offset_deg = (raw_az_deg - ref_deg) % 360
-        config.live_azimuth_deg = ref_deg # Calibrated immediately to matching reference degrees
+        config.live_azimuth_deg = ref_deg
         send_config_to_pc()
 
-# CRSF RC Channel Decoder for VRX/Cam Toggles
 crsf_state = 0
 crsf_len = 0
 crsf_type = 0
 crsf_payload = bytearray()
 
 def resolve_switch_position(val, switch_type):
-    # Map raw CRSF 172..1811 range cleanly into switch positions (0 to switch_type - 1)
     if val < 172: val = 172
     if val > 1811: val = 1811
     pos = int(((val - 172) * switch_type) / 1640)
@@ -598,9 +545,7 @@ def process_crsf_byte(b):
             channels[14] = (crsf_payload[19] >> 2 | crsf_payload[20] << 6) & 0x07FF
             channels[15] = (crsf_payload[20] >> 5 | crsf_payload[21] << 3) & 0x07FF
 
-            # PROCESS VRX CONTROL MODE
             if config.vrx_control_mode == 1:
-                # 1. ONLY S2 Controls Video Channel (0 to 7)
                 s2_val = channels[config.vrx_s2_rc_channel - 1]
                 if 172 <= s2_val <= 1811:
                     s2_pos = resolve_switch_position(s2_val, config.vrx_s2_switch_type)
@@ -608,9 +553,7 @@ def process_crsf_byte(b):
                     if target_chan != config.vrx_channel:
                         vrx_set_band_channel(config.vrx_band, target_chan)
                         send_config_to_pc()
-
             elif config.vrx_control_mode == 2:
-                # 2. ONLY 6POS Controls Video Band (0 to 5)
                 p6_val = channels[config.vrx_6pos_rc_channel - 1]
                 if 172 <= p6_val <= 1811:
                     p6_pos = resolve_switch_position(p6_val, config.vrx_6pos_switch_type)
@@ -618,35 +561,27 @@ def process_crsf_byte(b):
                     if target_band != config.vrx_band:
                         vrx_set_band_channel(target_band, config.vrx_channel)
                         send_config_to_pc()
-
             elif config.vrx_control_mode == 3:
-                # 3. S2 + 6POS Simultaneous operation: S2 sets Channel (0..7), 6POS sets Band (0..5)
                 s2_val = channels[config.vrx_s2_rc_channel - 1]
                 p6_val = channels[config.vrx_6pos_rc_channel - 1]
                 if (172 <= s2_val <= 1811) and (172 <= p6_val <= 1811):
                     s2_pos = resolve_switch_position(s2_val, config.vrx_s2_switch_type)
                     p6_pos = resolve_switch_position(p6_val, config.vrx_6pos_switch_type)
-
                     target_chan = min(s2_pos, 7)
                     target_band = min(p6_pos, 5)
-
                     if target_chan != config.vrx_channel or target_band != config.vrx_band:
                         vrx_set_band_channel(target_band, target_chan)
                         send_config_to_pc()
-
             elif config.vrx_control_mode == 4:
-                # 4. Standard Customizable Mapping Table lookup
                 vrx_ch = channels[config.vrx_rc_channel - 1]
                 if 172 <= vrx_ch <= 1811:
                     pos = int(((vrx_ch - 172) * config.vrx_positions_count) / 1640)
                     pos = max(0, min(pos, config.vrx_positions_count - 1))
-
                     target_band, target_chan = config.vrx_mapped_channels[pos]
                     if target_band != config.vrx_band or target_chan != config.vrx_channel:
                         vrx_set_band_channel(target_band, target_chan)
                         send_config_to_pc()
 
-            # Cam Switch toggling
             cam_ch = channels[config.cam_rc_channel - 1]
             if 172 <= cam_ch <= 1811:
                 target_cam = 1 if cam_ch > 992 else 0
@@ -655,15 +590,10 @@ def process_crsf_byte(b):
                     send_config_to_pc()
         crsf_state = 0
 
-# --- Main Polling Engine ---
 def main():
     vrx_init()
-
-    # === Safe Physical Servo Homing Sequence ===
-    # Drive Elevation servo to -10 degrees (888us) on boot to home mechanical structure safely!
     update_servos(config.azimuth_trim_us, 888)
-    time.sleep_ms(1200) # Wait 1.2 seconds for safe homing
-    # Move smoothly back to standard 0-degree point (1000us)
+    time.sleep_ms(1200)
     update_servos(config.azimuth_trim_us, config.elevation_min_us)
     time.sleep_ms(300)
 
@@ -677,30 +607,24 @@ def main():
         poll.register(sys.stdin, select.POLLIN)
 
     global last_rf_board_msg_ms, last_mav_msg_ms, last_pc_mux_vcp_ms
-    last_pc_mux_vcp_ms = time.ticks_ms() - 10000
 
     while True:
         now = time.ticks_ms()
         activity = False
 
-        # 1. Read manual potentiometers (50ms interval)
         if time.ticks_diff(now, last_pot_update_ms) >= 50:
             last_pot_update_ms = now
             tracker_read_potentiometers()
 
-        # 2a. Periodically send system config and connection/MAVLink status to PC (1000ms interval)
         if time.ticks_diff(now, last_pc_status_ms) >= 1000:
             last_pc_status_ms = now
             send_config_to_pc()
 
-        # 3. Direct hardware UART polling (safe, robust, and bypasses select.poll() compatibility limits)
         if uart0.any():
             b_buf = uart0.read()
             if b_buf:
                 activity = True
-                # Forward raw CRSF from TX16S directly to Board 2 as multiplexed CHAN_CRSF packets
                 uart1.write(mux_encode(CHAN_CRSF, b_buf))
-                # Also parse locally for VRX/Cam switching logic
                 for b in b_buf:
                     process_crsf_byte(b)
 
@@ -708,50 +632,53 @@ def main():
             b_buf = uart1.read()
             if b_buf:
                 activity = True
-                last_rf_board_msg_ms = time.ticks_ms() # We received valid UART bytes from Board 2!
+                last_rf_board_msg_ms = time.ticks_ms()
                 for b in b_buf:
-                    success, chan, payload = mux_parser.parse_byte(b)
+                    res = mux_parser.parse_byte(b)
+                    if len(res) == 4:
+                        success, chan, payload, failed_raw = res
+                    else:
+                        success, chan, payload = res
+                        failed_raw = b""
+
                     if success:
                         if chan == CHAN_MAVLINK:
-                            last_mav_msg_ms = time.ticks_ms() # MAVLink telemetry is actively transferring!
-
+                            last_mav_msg_ms = time.ticks_ms()
                             vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
                             if vcp_is_pc_mode:
-                                # When PC Configurator is active, multiplex MAVLink frames over USB VCP to prevent stream intermixing corruption
                                 write_stdout_vcp_only(mux_encode(CHAN_MAVLINK, payload))
                             else:
-                                # Fallback to raw un-encapsulated MAVLink stream when connected directly to GCS via COM
                                 write_stdout_vcp_only(payload)
-
-                            # Always transmit raw, un-encapsulated MAVLink data to CP210x port at 115200 baud
                             pio_write_cp210x(payload)
                         elif chan == CHAN_CRSF:
                             vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
                             if vcp_is_pc_mode:
                                 write_stdout_vcp_only(mux_encode(CHAN_CRSF, payload))
-
-                            # Write received CRSF back to TX16S
                             try:
                                 uart0.write(payload)
                             except Exception:
                                 pass
-
                             for byte in payload:
                                 process_crsf_byte(byte)
                         elif chan == CHAN_CONFIG:
-                            # 0x99 is the periodic RF Switcher ping. If received, simply register connection.
                             if len(payload) > 0 and payload[0] == 0x99:
                                 pass
                             else:
                                 process_pc_command(payload)
+                    else:
+                        if failed_raw:
+                            vcp_is_pc_mode = (time.ticks_diff(time.ticks_ms(), last_pc_mux_vcp_ms) < 5000)
+                            if vcp_is_pc_mode:
+                                write_stdout_vcp_only(mux_encode(CHAN_MAVLINK, failed_raw))
+                            else:
+                                write_stdout_vcp_only(failed_raw)
+                            pio_write_cp210x(failed_raw)
 
-        # 4. Non-blocking high-speed VCP polling (Auto-detecting dual-mode PC Configurator / raw GCS COM connection)
         vcp_data = None
         if _usb is not None and _usb.any():
             vcp_data = _usb.read()
             activity = True
         else:
-            # Fallback stdin non-blocking loop to read all available bytes
             stdin_bytes = bytearray()
             while True:
                 events = poll.poll(0)
@@ -778,7 +705,13 @@ def main():
         if vcp_data:
             raw_vcp_in_buf = bytearray()
             for b in vcp_data:
-                success, chan, payload = pc_mux_parser.parse_byte(b)
+                res = pc_mux_parser.parse_byte(b)
+                if len(res) == 4:
+                    success, chan, payload, failed_raw = res
+                else:
+                    success, chan, payload = res
+                    failed_raw = b""
+
                 if success:
                     last_pc_mux_vcp_ms = time.ticks_ms()
                     if chan == CHAN_CONFIG:
@@ -786,34 +719,28 @@ def main():
                     elif chan == CHAN_MAVLINK:
                         uart1.write(mux_encode(CHAN_MAVLINK, payload))
                 else:
-                    if pc_mux_parser.state == 0 or b in [0xFE, 0xFD]:
-                        raw_vcp_in_buf.append(b)
+                    if failed_raw:
+                        raw_vcp_in_buf.extend(failed_raw)
 
             if len(raw_vcp_in_buf) > 0:
-                # Forward raw GCS MAVLink bytes to Board 2 inside CHAN_MAVLINK chunks
                 i = 0
                 while i < len(raw_vcp_in_buf):
                     chunk = raw_vcp_in_buf[i:i+255]
                     uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                     i += 255
 
-        # 5. Non-blocking high-speed CP210x Soft-UART polling - 100% transparent raw MAVLink forwarding
         cp210x_data = pio_read_cp210x()
         if cp210x_data:
             activity = True
-            # Forward raw MAVLink bytes directly to Board 2 inside CHAN_MAVLINK chunks
             i = 0
             while i < len(cp210x_data):
                 chunk = cp210x_data[i:i+255]
                 uart1.write(mux_encode(CHAN_MAVLINK, chunk))
                 i += 255
 
-        # Drain non-blocking CP210x Soft-UART transmit ring buffer
         if drain_cp210x_tx():
             activity = True
 
-        # Yield CPU slightly to keep the board running cool and prevent tight-loop starvation
-        # Only sleep if no activity was handled, prioritizing instant data throughput!
         if not activity:
             time.sleep_ms(1)
 
